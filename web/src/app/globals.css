@@ -1,0 +1,103 @@
+@import "tailwindcss";
+
+:root {
+  --background: #05060c;
+  --foreground: #e2e8f0;
+  --neon-cyan: #00f0ff;
+  --neon-pink: #ff00c8;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+}
+
+html,
+body {
+  max-width: 100vw;
+  overflow-x: hidden;
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* --- scrollbars ------------------------------------------------------- */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(0, 240, 255, 0.35) transparent;
+}
+*::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+*::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.03);
+}
+*::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, rgba(0, 240, 255, 0.5), rgba(255, 0, 200, 0.45));
+  border-radius: 999px;
+}
+
+/* --- range inputs ----------------------------------------------------- */
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  background: transparent;
+}
+input[type="range"]::-webkit-slider-runnable-track {
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.12);
+}
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  margin-top: -5px;
+  height: 16px;
+  width: 16px;
+  border-radius: 999px;
+  background: #e6fbff;
+  border: 2px solid var(--neon-cyan);
+  box-shadow: 0 0 10px rgba(0, 240, 255, 0.7);
+  cursor: pointer;
+}
+input[type="range"]:disabled::-webkit-slider-thumb {
+  border-color: rgba(255, 255, 255, 0.25);
+  box-shadow: none;
+}
+input[type="range"]::-moz-range-track {
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.12);
+}
+input[type="range"]::-moz-range-thumb {
+  height: 14px;
+  width: 14px;
+  border-radius: 999px;
+  background: #e6fbff;
+  border: 2px solid var(--neon-cyan);
+  cursor: pointer;
+}
+
+select,
+input[type="url"],
+input[type="text"] {
+  color-scheme: dark;
+}
+
+select option {
+  background: #0a0c16;
+  color: #e2e8f0;
+}
+
+/* VexFlow renders black glyphs — keep the paper panel light and crisp */
+.mm-score svg {
+  display: block;
+  max-width: none;
+}
