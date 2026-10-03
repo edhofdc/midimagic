@@ -52,8 +52,12 @@ State disimpan di SQLite (`backend/data/midimagic.db`) dengan tabel `jobs`, `sha
 
 ```bash
 sudo apt install ffmpeg python3-venv
-node -v   # butuh Node 20+
+node -v   # butuh Node 20+ — juga dipakai yt-dlp sebagai JS runtime
 ```
+
+> **YouTube:** sejak yt-dlp 2025.x ekstraksi YouTube butuh JS runtime. Backend memanggilnya
+> dengan `--js-runtimes node` (lihat `MIDIMAGIC_YT_JS_RUNTIME`). Tanpa itu banyak format
+> hilang dan unduhan sering gagal.
 
 ### 2. Backend
 
@@ -116,6 +120,7 @@ Backend membaca env var berikut (default di `backend/app/config.py`):
 | `MIDIMAGIC_DEMUCS_MODEL` | `htdemucs` | model Demucs |
 | `MIDIMAGIC_WORKERS` | `1` | worker paralel (naikkan hanya kalau RAM cukup) |
 | `MIDIMAGIC_YT_MAX_SECONDS` | `900` | batas durasi YouTube |
+| `MIDIMAGIC_YT_JS_RUNTIME` | `node` | JS runtime untuk ekstraksi YouTube (kosongkan untuk mematikan) |
 | `MIDIMAGIC_MAX_UPLOAD_MB` | `60` | batas ukuran upload |
 
 Frontend: `NEXT_PUBLIC_API_BASE` di `web/.env.local` — **di-bake saat build**, jadi ubah lalu

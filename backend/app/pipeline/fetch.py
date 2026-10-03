@@ -60,10 +60,11 @@ def from_youtube(url: str, job_dir: Path, job_id: str, log: Log) -> tuple[Path, 
         raise FetchError("yt-dlp tidak terpasang")
 
     log("fetching", "mengambil metadata YouTube…")
+    js_runtime = ["--js-runtimes", config.YTDLP_JS_RUNTIME] if config.YTDLP_JS_RUNTIME else []
     meta: dict = {}
     try:
         r = subprocess.run(
-            [ytdlp, "--no-playlist", "--skip-download", "--dump-single-json",
+            [ytdlp, *js_runtime, "--no-playlist", "--skip-download", "--dump-single-json",
              "--no-warnings", url],
             capture_output=True, text=True, timeout=120,
         )
@@ -86,7 +87,7 @@ def from_youtube(url: str, job_dir: Path, job_id: str, log: Log) -> tuple[Path, 
     log("fetching", "mengunduh audio dari YouTube…")
     raw_out = job_dir / "source_raw.%(ext)s"
     cmd = [
-        ytdlp, "--no-playlist", "--no-warnings", "--newline",
+        ytdlp, *js_runtime, "--no-playlist", "--no-warnings", "--newline",
         "-f", config.YTDLP_FORMAT,
         "--max-filesize", "200M",
         "-x", "--audio-format", "wav", "--audio-quality", "0",

@@ -29,6 +29,8 @@ ALLOWED_EXT = {".mp3", ".wav", ".ogg", ".flac", ".m4a", ".aac", ".opus", ".webm"
 # yt-dlp
 YTDLP_FORMAT = "bestaudio/best"
 YTDLP_MAX_DURATION = int(os.environ.get("MIDIMAGIC_YT_MAX_SECONDS", "900"))  # 15 min guard
+# YouTube extraction needs a JS runtime since yt-dlp 2025.x; node is the one we ship with.
+YTDLP_JS_RUNTIME = os.environ.get("MIDIMAGIC_YT_JS_RUNTIME", "node")
 
 # Demucs
 DEMUCS_MODEL = os.environ.get("MIDIMAGIC_DEMUCS_MODEL", "htdemucs")
