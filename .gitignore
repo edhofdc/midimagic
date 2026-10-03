@@ -22,6 +22,8 @@ backend/data/
 *.flac
 *.m4a
 !backend/data/test/*.wav
+# instrument samples ARE part of the app — keep them
+!web/public/audio/**/*.mp3
 
 # env & secrets
 .env

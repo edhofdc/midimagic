@@ -38,13 +38,22 @@ export default function TransformPanel({
                 type="button"
                 onClick={() => onInstrument(ins.id)}
                 title={ins.hint}
-                className={`rounded-lg px-3 py-1.5 text-xs ring-1 transition ${
+                className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs ring-1 transition ${
                   active
                     ? "bg-pink-500/20 text-pink-100 ring-pink-400/50 shadow-[0_0_18px_-4px_rgba(255,0,200,0.7)]"
                     : "bg-white/5 text-slate-300 ring-white/10 hover:bg-white/10"
                 }`}
               >
                 {ins.label}
+                <span
+                  className={`rounded px-1 py-px text-[9px] uppercase tracking-wide ${
+                    ins.kind === "sample"
+                      ? "bg-emerald-500/15 text-emerald-300"
+                      : "bg-slate-500/20 text-slate-400"
+                  }`}
+                >
+                  {ins.kind === "sample" ? "sample" : "synth"}
+                </span>
               </button>
             );
           })}

@@ -27,10 +27,11 @@ Audio / YouTube ──> yt-dlp + ffmpeg ──> [Demucs stem AI] ──> basic-p
 | AI Stem Separation | ✅ | **Demucs** 2-stem (vokal/instrumental) atau 4-stem |
 | Interactive Piano Simulator (88 tuts) | ✅ | tuts menyala mengikuti not yang berbunyi |
 | Synthesia-style falling notes | ✅ | canvas, warna per pitch, auto-follow, click-to-seek |
-| Play / Pause / Stop / Seek / Volume | ✅ | transport dengan range-request audio |
+| Play / Pause / Stop / Seek / Volume | ✅ | transport dengan range-request audio + level meter |
+| **Sustain pedal** | ✅ | not tetap berbunyi setelah tuts lepas, seperti pedal ditahan |
 | Tempo & Pitch shifting | ✅ | 25%–200% tanpa ubah pitch; transpose −12…+12 semitone |
 | Sheet Music Generator | ✅ | **VexFlow** grand staff treble+bass, 4/4 |
-| Multi-Instrument Synth | ✅ | Grand Piano, Electric Piano, Analog Synth, Guitar, Chiptune, Strings |
+| Multi-Instrument Synth | ✅ | 4 instrumen **berbasis rekaman asli** (sample) + 2 sintetis |
 | Export | ✅ | `.mid` asli, `.mid` hasil transpose/tempo (di-render ulang di server), `.pdf` partitur |
 | Share link | ✅ | slug unik, halaman `/share/<slug>` read-only + penghitung kunjungan |
 
@@ -80,7 +81,28 @@ python3 -m venv .venv
 > Pakai urutan `--no-deps` + `onnxruntime` di atas — modelnya identik
 > (`basic_pitch/saved_models/icassp_2022/nmp.onnx`), jauh lebih ringan dan cepat.
 
-### 3. Frontend
+### 3. Sampel instrumen (aset audio)
+
+Instrumennya memakai **rekaman asli**, bukan oscillator:
+
+| Instrumen | Sumber | Sample |
+|---|---|---|
+| Grand Piano | [Salamander Grand Piano](https://tonejs.github.io/audio/salamander/) (Alexander Holm, CC-BY 3.0) | 30 (A0–C8) |
+| Electric Piano | MusyngKite `electric_piano_1` | 30 |
+| Guitar (Nylon) | MusyngKite `acoustic_guitar_nylon` | 30 |
+| String Ensemble | MusyngKite `string_ensemble_1` | 30 |
+
+```bash
+python3 scripts/fetch_samples.py      # ~3,5 MB, sekali saja
+```
+
+Skrip mengunduh ke `web/public/audio/` dan menulis `web/src/lib/sample-manifest.json`.
+Tone.Sampler melakukan pitch-shift antar sample (±1,5 semitone), jadi 30 sample per instrumen
+sudah cukup — tidak ada artefak yang terdengar.
+
+Analog Synth dan 8-bit Chiptune tetap sintetis (memang itu maksudnya).
+
+### 4. Frontend
 
 ```bash
 cd web

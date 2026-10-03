@@ -1,9 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AudioWaveform, HardDrive, Sparkles, Zap } from "lucide-react";
+import { AudioWaveform, HardDrive, Loader2, Sparkles, Zap } from "lucide-react";
 import { api, API_BASE, type Health, type Job, type JobOptions } from "@/lib/api";
 import type { InstrumentId, MidiPlayer, NoteEvent } from "@/lib/audio";
+import { INSTRUMENTS } from "@/lib/instruments";
 import { loadMidi, sanitizeNotes } from "@/lib/midi";
 import { renderScore } from "@/lib/score";
 import SourcePanel from "@/components/SourcePanel";
@@ -32,28 +33,44 @@ export default function Studio() {
   const [busy, setBusy] = useState(false);
   const [uploadPct, setUploadPct] = useState<number | null>(null);
   const [libBusy, setLibBusy] = useState(false);
+  const [engineReady, setEngineReady] = useState(false);
 
   /* ---------------------------------------------------------------- engine */
   useEffect(() => {
     let instance: MidiPlayer | null = null;
     let cancelled = false;
     // Tone.js needs a real AudioContext, so the engine is built client-side only
-    import("@/lib/audio").then(({ MidiPlayer }) => {
+    import("@/lib/audio").then(async ({ MidiPlayer }) => {
       if (cancelled) return;
       instance = new MidiPlayer();
       playerRef.current = instance;
       setPlayer(instance);
+      // debug handle: lets us inspect the audio graph from the console / QA
+      (window as unknown as { __midimagic?: unknown }).__midimagic = instance;
+      await instance.whenReady();
+      if (!cancelled) setEngineReady(true);
     });
     return () => {
       cancelled = true;
       instance?.dispose();
       playerRef.current = null;
+      setEngineReady(false);
     };
   }, []);
 
   useEffect(() => {
     if (!player) return;
+    const wasSame = player.getInstrument() === instrument;
     player.setInstrument(instrument);
+    if (wasSame) return;
+    setEngineReady(false);
+    let cancelled = false;
+    player.whenReady().then(() => {
+      if (!cancelled) setEngineReady(true);
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [player, instrument]);
   useEffect(() => {
     if (player) player.speed = speed;
@@ -277,13 +294,23 @@ export default function Studio() {
           {/* right column */}
           <div className="space-y-4">
             {player ? (
-              <PianoRoll
-                player={player}
-                notes={notes}
-                zoom={zoom}
-                visibleSeconds={visibleSeconds}
-                onSeek={(s) => player.seek(s)}
-              />
+              <div className="relative">
+                <PianoRoll
+                  player={player}
+                  notes={notes}
+                  zoom={zoom}
+                  visibleSeconds={visibleSeconds}
+                  onSeek={(s) => player.seek(s)}
+                />
+                {!engineReady && (
+                  <div className="pointer-events-none absolute inset-0 grid place-items-center rounded-xl bg-black/60 backdrop-blur-sm">
+                    <span className="flex items-center gap-2 rounded-full bg-cyan-500/15 px-3 py-1.5 text-xs text-cyan-100 ring-1 ring-cyan-400/30">
+                      <Loader2 size={13} className="animate-spin" />
+                      memuat sample {INSTRUMENTS.find((i) => i.id === instrument)?.label}…
+                    </span>
+                  </div>
+                )}
+              </div>
             ) : (
               <div className="grid h-[476px] place-items-center rounded-xl border border-cyan-500/20 bg-[#05060c] text-xs text-slate-500">
                 menyiapkan audio engine…
