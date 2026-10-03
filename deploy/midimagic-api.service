@@ -1,0 +1,18 @@
+[Unit]
+Description=MidiMagic API (audio/YouTube → MIDI pipeline)
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/mycodingproject/midimagic/backend
+Environment=MIDIMAGIC_HOST=0.0.0.0
+Environment=MIDIMAGIC_PORT=8892
+Environment=MIDIMAGIC_PUBLIC_ORIGIN=http://100.80.143.31:8891
+ExecStart=%h/mycodingproject/midimagic/backend/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8892
+Restart=on-failure
+RestartSec=5
+StandardOutput=append:%h/mycodingproject/midimagic/backend/data/api.log
+StandardError=append:%h/mycodingproject/midimagic/backend/data/api.log
+
+[Install]
+WantedBy=default.target

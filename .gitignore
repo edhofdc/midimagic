@@ -1,0 +1,38 @@
+# deps / build
+node_modules/
+.next/
+out/
+dist/
+build/
+
+# python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+
+# data & artifacts
+backend/data/
+!backend/data/test/
+
+# uploads / media
+*.mp3
+*.wav
+*.mid
+*.flac
+*.m4a
+!backend/data/test/*.wav
+
+# env & secrets
+.env
+.env.local
+.env*.local
+
+# logs
+*.log
+
+# editor / os
+.DS_Store
+*.swp
+.idea/
+.vscode/

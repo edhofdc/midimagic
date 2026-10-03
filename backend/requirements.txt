@@ -1,0 +1,13 @@
+fastapi
+uvicorn[standard]
+python-multipart
+yt-dlp
+librosa
+pretty_midi
+soundfile
+numpy
+scipy
+# torch + torchaudio installed from the CPU wheel index:
+#   pip install --index-url https://download.pytorch.org/whl/cpu torch torchaudio
+demucs
+basic-pitch

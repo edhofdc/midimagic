@@ -1,0 +1,16 @@
+[Unit]
+Description=MidiMagic web UI (Next.js)
+After=network-online.target midimagic-api.service
+
+[Service]
+Type=simple
+WorkingDirectory=%h/mycodingproject/midimagic/web
+Environment=NEXT_PUBLIC_API_BASE=http://100.80.143.31:8892
+ExecStart=/usr/bin/env npx next start -p 8891 -H 0.0.0.0
+Restart=on-failure
+RestartSec=5
+StandardOutput=append:%h/mycodingproject/midimagic/web/.next/server.log
+StandardError=append:%h/mycodingproject/midimagic/web/.next/server.log
+
+[Install]
+WantedBy=default.target
