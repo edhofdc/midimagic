@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from . import config, db
-from .pipeline import fetch, post, stems as stems_mod, sustain, transcribe
+from .pipeline import align, fetch, post, stems as stems_mod, sustain, transcribe
 
 _pool = ThreadPoolExecutor(max_workers=config.MAX_WORKERS, thread_name_prefix="midimagic")
 
@@ -137,6 +137,14 @@ def _run(job_id: str) -> None:
         + (f", {summary['merged']} fragmen digabung" if summary.get("merged") else "")
         + (f", {summary['dropped']} noise dibuang" if summary.get("dropped") else ""))
 
+    # ---------------------------------------------------------- 5b. align
+    # Nothing downstream is trustworthy until the notes sit on the recording's own
+    # timeline: pedal detection pairs note times with gaps in the audio, the score
+    # derives bar lines from those times, and the player syncs to them. Any upstream
+    # length change (silence trimming, a stem separator that pads) shifts all of it.
+    _stage(job_id, "finalizing", 0.91, "menyelaraskan dengan rekaman asli")
+    align_info = align.align(wav, midi_path, log=log)
+
     # ---------------------------------------------------------- 6. pedal (CC64)
     _stage(job_id, "sustain", 0.94, "mendeteksi sustain pedal dari rekaman")
     pedal = sustain.analyze(prepared, midi_path, log)
@@ -153,6 +161,7 @@ def _run(job_id: str) -> None:
         note_count=int(summary["note_count"]),
         duration=float(summary["duration"] or duration or 0),
         tempo=tempo,
+        align_ms=int(round(align_info["lag_seconds"] * 1000)),
         pedal=pedal,
         error="",
     )

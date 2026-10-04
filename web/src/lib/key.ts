@@ -74,6 +74,27 @@ export function pitchClassHistogram(notes: NoteEvent[]): number[] {
   return hist;
 }
 
+/** Standard key signatures, for the manual override in the score panel. */
+export const KEY_CHOICES: { vex: string; label: string }[] = [
+  ["C", "C major"], ["G", "G major"], ["D", "D major"], ["A", "A major"],
+  ["E", "E major"], ["B", "B major"], ["F#", "F# major"], ["C#", "C# major"],
+  ["F", "F major"], ["Bb", "Bb major"], ["Eb", "Eb major"], ["Ab", "Ab major"],
+  ["Db", "Db major"], ["Gb", "Gb major"],
+  ["Am", "A minor"], ["Em", "E minor"], ["Bm", "B minor"], ["F#m", "F# minor"],
+  ["C#m", "C# minor"], ["G#m", "G# minor"], ["D#m", "D# minor"],
+  ["Dm", "D minor"], ["Gm", "G minor"], ["Cm", "C minor"], ["Fm", "F minor"],
+  ["Bbm", "Bb minor"], ["Ebm", "Eb minor"], ["Abm", "Ab minor"],
+].map(([vex, label]) => ({ vex, label }));
+
+export function keyFromVex(vex: string): DetectedKey {
+  const minor = vex.endsWith("m") && vex.length > 1;
+  const name = minor ? vex.slice(0, -1) : vex;
+  const idx = (minor ? FLAT_NAMES : FLAT_NAMES).indexOf(name);
+  const tonic = idx >= 0 ? idx : Math.max(0, NAMES.indexOf(name));
+  const label = KEY_CHOICES.find((k) => k.vex === vex)?.label ?? `${name} ${minor ? "minor" : "major"}`;
+  return { vex, tonic, mode: minor ? "minor" : "major", label, confidence: 1, margin: 1 };
+}
+
 export function detectKey(notes: NoteEvent[]): DetectedKey {
   const hist = pitchClassHistogram(notes);
   const fallback: DetectedKey = {

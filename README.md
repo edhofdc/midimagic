@@ -272,6 +272,54 @@ Diuji pada dua lagu yang kuncinya diketahui; hanya pembobotan ini yang benar di 
 | sepertiga not terendah | ✗ E major | ✓ D major |
 | harmoni penutup saja | ✗ F# minor | ✓ D major |
 
+### Kenapa hasilnya bisa "ngelantur" dari rekaman
+
+Ini bug paling berpengaruh di seluruh pipeline, dan sifatnya senyap.
+
+`prepare()` dulu memanggil `librosa.effects.trim`, yang memotong silence di ujung file:
+rekaman 199.9s menjadi 198.1s sebelum model melihatnya. Karena itu, **setiap timestamp
+hasil transkripsi relatif terhadap file yang sudah dipotong** — seluruh MIDI meleset
+~1.1s dari rekaman yang sedang kamu bandingkan, tetapi tetap konsisten dengan dirinya
+sendiri, jadi tidak ada yang terlihat rusak.
+
+Terukur terhadap rekaman asli:
+
+| metrik | sebelum | sesudah |
+|---|---|---|
+| chroma similarity | 0.581 | **0.879** |
+| jendela 10s dengan kemiripan ≥0.85 | 0/20 | **15/20** |
+| lag terbaik | +1.138s | **+0.023s** |
+| not yang didukung spektrum rekaman | 55.2% | **98.6%** |
+
+Perbaikannya tiga lapis:
+
+1. **Jangan pernah mengubah panjang audio.** Silence di-*gate* (dinolkan), bukan
+   dipotong, sehingga timeline tetap persis. Setiap langkah yang mengubah panjang
+   (resample, padding stem, trim) diikuti pemeriksaan panjang terhadap sumber dengan
+   peringatan keras di log kalau berubah.
+2. **Ukur sisa lag lalu koreksi** (`pipeline/align.py`). Bangun matriks chroma langsung
+   dari event not MIDI (tanpa render audio), bandingkan dengan chroma audio sumber,
+   cari lag terbaik, geser MIDI kalau |lag| > 40 ms. Jalan **sebelum** deteksi pedal,
+   karena deteksi pedal memasangkan waktu not dengan jeda di audio.
+3. **Tampilkan hasilnya di UI** sebagai `align_ms` pada job, supaya regresi langsung
+   kelihatan.
+
+### Cek hasilnya sendiri: tombol **Asli**
+
+Tidak ada cara jujur menilai transkripsi selain mendengarkannya bersamaan dengan
+rekamannya. Tombol **Asli** di transport memutar rekaman sumber sejajar dengan piano
+(disajikan dari `/api/jobs/{id}/audio`, elemen audio-nya terpisah dari DOM dan jam-nya
+disetel dari clock pemutar). Kalau masih terasa maju/mundur, ada kontrol geser ±50 ms.
+
+Kalau tombol ini butuh geseran besar, itu **bug pipeline, bukan selera** — laporkan.
+
+### Koreksi manual partitur
+
+Deteksi kunci dan tempo itu heuristik, jadi keduanya bisa ditimpa di panel partitur:
+dropdown kunci (28 pilihan) dan input ♪ = BPM. Kalau kunci hasil deteksi ambigu
+(selisih skor antar-kandidat < 0.01), UI memberi peringatan eksplisit — itu terjadi
+pada repertoar kromatik seperti Op. 39 No. 6, di mana E major dan A minor nyaris seri.
+
 ## Uji
 
 ```bash
@@ -308,6 +356,12 @@ membandingkan **chroma** dengan rekaman asli — time-aligned maupun bebas-waktu
 plus precision/recall onset terhadap onset detector librosa. `key_probe.py` mencetak
 perbandingan beberapa skema pembobotan kunci terhadap kunci yang kamu tahu benar.
 
+`diagnose.py` menjawab "di mana persisnya hasilnya meleset": kemiripan chroma per
+jendela 10 detik (bagian mana yang salah), lag global terbaik (geseran atau nada salah),
+**dukungan spektrum per not** (berapa persen not benar-benar ada di rekaman), dan sebaran
+offset onset. Bandingkan selalu terhadap **rekaman sumber**, bukan `prepared.wav` —
+`prepared.wav` sudah satu timeline dengan MIDI, jadi ia menyembunyikan bug geseran.
+
 ## Performa (mesin 4 vCPU, tanpa GPU)
 
 | Tahap | 4 detik audio | Lagu 3 menit |
@@ -336,10 +390,14 @@ midimagic/
 │   │       ├── stems.py       # Demucs
 │   │       ├── transcribe.py  # pra-proses + basic-pitch / librosa-pyin → MIDI
 │   │       ├── sustain.py     # deteksi pedal dari audio → CC64 di MIDI
+│   │       ├── align.py       # ukur & koreksi offset MIDI vs rekaman sumber
 │   │       └── post.py        # gabung fragmen, buang noise, transpose/tempo
 │   ├── tests/
 │   │   ├── smoke_api.py       # uji end-to-end lewat HTTP
 │   │   ├── pipeline_check.py  # jalankan pipeline pada audio nyata, cetak waktu
+│   │   ├── accuracy_report.py # chroma vs rekaman + precision/recall onset
+│   │   ├── diagnose.py        # di mana persisnya hasilnya meleset
+│   │   ├── key_probe.py       # banding skema pembobotan deteksi kunci
 │   │   ├── gap_shape.py       # bentuk decay di jeda antar-not (tuning pedal)
 │   │   └── pedal_probe.py     # sebaran rasio energi jeda
 │   ├── data/                  # sqlite, artefak job, share

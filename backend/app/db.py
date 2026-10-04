@@ -61,6 +61,7 @@ MIGRATIONS: list[tuple[str, str, str]] = [
     ("jobs", "pedal", "ALTER TABLE jobs ADD COLUMN pedal TEXT NOT NULL DEFAULT '{}'"),
     ("jobs", "accuracy", "ALTER TABLE jobs ADD COLUMN accuracy TEXT NOT NULL DEFAULT ''"),
     ("jobs", "tempo", "ALTER TABLE jobs ADD COLUMN tempo REAL NOT NULL DEFAULT 0"),
+    ("jobs", "align_ms", "ALTER TABLE jobs ADD COLUMN align_ms INTEGER NOT NULL DEFAULT 0"),
 ]
 
 

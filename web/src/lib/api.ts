@@ -34,6 +34,10 @@ export interface Job {
   /** sustain-pedal detection result from the backend */
   pedal?: PedalInfo;
   accuracy?: string;
+  /** detected tempo written into the MIDI header (drives every bar line) */
+  tempo?: number;
+  /** residual offset measured against the source recording, in ms, before correction */
+  align_ms?: number;
   note_count: number;
   duration: number;
   error: string;

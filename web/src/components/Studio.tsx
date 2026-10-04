@@ -333,6 +333,8 @@ export default function Studio() {
           duration={duration}
           disabled={notes.length === 0}
           hasPedal={pedal.length > 0}
+          referenceUrl={job?.status === "done" ? api.audioUrl(job.id) : undefined}
+          alignMs={job?.align_ms}
         />
       )}
 
@@ -433,16 +435,21 @@ export default function Studio() {
         ) : (
           <div className="grid gap-4 lg:grid-cols-[380px_1fr]">
             {/* left column */}
-            <div className="space-y-4">
+            <div className="min-w-0 space-y-4">
               {sourceGroup}
               {libraryGroup}
             </div>
 
-            {/* right column */}
-            <div className="space-y-4">
+            {/* right column — min-w-0 matters: a grid track defaults to
+                min-width:auto, so the wide piano-roll canvas and the score's
+                min-w-[900px] page would stretch the 1fr column past the viewport
+                and clip its right edge (the transport controls live there). */}
+            <div className="min-w-0 space-y-4">
               {playerGroup}
               {soundGroup}
-              <div className="grid gap-4 xl:grid-cols-2">{scoreGroup}</div>
+              <div className="grid min-w-0 gap-4 xl:grid-cols-2 [&>*]:min-w-0">
+                {scoreGroup}
+              </div>
             </div>
           </div>
         )}

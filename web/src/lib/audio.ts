@@ -95,6 +95,13 @@ export class MidiPlayer {
   speed = 1;
   transpose = 0;
 
+  /* ---- reference recording (A/B against the source) ---- */
+  private ref: HTMLAudioElement | null = null;
+  private refEnabled = false;
+  private refOffset = 0;
+  private refDrift = 0;
+  private refWantedUrl = "";
+
   duration = 0;
 
   constructor() {
@@ -332,6 +339,7 @@ export class MidiPlayer {
     this.pedalDown = this.pedalMode === "on";
     if (this.rafId !== null) cancelAnimationFrame(this.rafId);
     this.rafId = null;
+    if (this.ref && !this.ref.paused) this.ref.pause();
     this.emit();
   }
 
@@ -343,6 +351,7 @@ export class MidiPlayer {
     this.position = 0;
     this.syncPedalTo(0);
     if (this.pedalMode === "on") this.pedalDown = true;
+    if (this.ref && !this.ref.paused) this.ref.pause();
     this.emit();
   }
 
@@ -353,6 +362,7 @@ export class MidiPlayer {
     this.syncPedalTo(this.position);
     if (this.pedalMode === "on") this.pedalDown = true;
     if (this.playing) this.lastFrame = performance.now();
+    this.syncReference(true);
     this.emit();
   }
 
@@ -361,6 +371,84 @@ export class MidiPlayer {
     return () => {
       this.listeners.delete(cb);
     };
+  }
+
+  /* ------------------------------------------------- reference recording */
+
+  /**
+   * Load the *source recording* next to the transcription.
+   *
+   * This is the only way to actually check the result: play both and listen. If
+   * they drift, the offset control below corrects it. Any offset that is needed
+   * here is a bug in the pipeline, not a taste setting — it means a timestamp
+   * moved somewhere upstream, so it is also surfaced in the job record.
+   */
+  setReference(url: string | null) {
+    if (this.refWantedUrl === (url ?? "")) return;
+    this.refWantedUrl = url ?? "";
+    if (this.ref) {
+      this.ref.pause();
+      this.ref.removeAttribute("src");
+      this.ref.load();
+      this.ref = null;
+    }
+    if (!url || typeof Audio === "undefined") {
+      this.emit();
+      return;
+    }
+    const a = new Audio();
+    a.preload = "auto";
+    a.src = url;
+    a.volume = 1;
+    this.ref = a;
+    this.emit();
+  }
+
+  setReferenceEnabled(on: boolean) {
+    this.refEnabled = on;
+    if (!on && this.ref && !this.ref.paused) this.ref.pause();
+    this.syncReference(true);
+    this.emit();
+  }
+
+  /** Positive pushes the *recording* later relative to the transcription. */
+  setReferenceOffset(sec: number) {
+    this.refOffset = sec;
+    this.syncReference(true);
+    this.emit();
+  }
+
+  get referenceEnabled() {
+    return this.refEnabled;
+  }
+
+  get referenceOffset() {
+    return this.refOffset;
+  }
+
+  /** How far the recording has slipped from the transcription, in seconds. */
+  get referenceDrift() {
+    return this.refDrift;
+  }
+
+  private syncReference(force = false) {
+    const a = this.ref;
+    if (!a) return;
+    if (!this.refEnabled || !this.playing) {
+      if (!a.paused) a.pause();
+      return;
+    }
+    const want = Math.max(0, this.position + this.refOffset);
+    if (Math.abs(a.playbackRate - this.speed) > 1e-3) a.playbackRate = this.speed;
+    if (force || Math.abs(a.currentTime - want) > 0.15) {
+      try {
+        a.currentTime = want;
+      } catch {
+        /* metadata not loaded yet */
+      }
+    }
+    this.refDrift = a.currentTime - want;
+    if (a.paused) void a.play().catch(() => undefined);
   }
 
   dispose() {
@@ -399,6 +487,7 @@ export class MidiPlayer {
         return;
       }
       this.pump();
+      this.syncReference();
       this.emit();
     }
     this.rafId = requestAnimationFrame(this.loop);

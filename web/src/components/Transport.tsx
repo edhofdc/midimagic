@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Pause, Play, Square, Volume2, VolumeX, Waves } from "lucide-react";
+import { Headphones, Pause, Play, RotateCcw, Square, Volume2, VolumeX, Waves } from "lucide-react";
 import type { MidiPlayer, PedalMode } from "@/lib/audio";
 import { formatTime } from "@/lib/midi";
 
@@ -11,6 +11,10 @@ interface Props {
   disabled?: boolean;
   /** whether the loaded MIDI carried a CC64 lane (i.e. Auto means something) */
   hasPedal?: boolean;
+  /** the source recording, so the transcription can be checked by ear */
+  referenceUrl?: string;
+  /** offset the pipeline had to correct, in ms — surfaced so a regression is visible */
+  alignMs?: number;
 }
 
 const PEDAL_LABEL: Record<PedalMode, string> = {
@@ -19,7 +23,7 @@ const PEDAL_LABEL: Record<PedalMode, string> = {
   off: "Off",
 };
 
-export default function Transport({ player, duration, disabled, hasPedal }: Props) {
+export default function Transport({ player, duration, disabled, hasPedal, referenceUrl, alignMs }: Props) {
   const seekRef = useRef<HTMLInputElement>(null);
   const timeRef = useRef<HTMLSpanElement>(null);
   const pedalRef = useRef<HTMLSpanElement>(null);
@@ -27,10 +31,25 @@ export default function Transport({ player, duration, disabled, hasPedal }: Prop
   const [volume, setVolume] = useState(0.75);
   const [muted, setMuted] = useState(false);
   const [pedalMode, setPedalMode] = useState<PedalMode>("auto");
+  const [refOn, setRefOn] = useState(false);
+  const [refMs, setRefMs] = useState(0);
 
   useEffect(() => {
     setPedalMode(player.pedalMode);
   }, [player]);
+
+  // hand the source recording to the player so it can run alongside the MIDI
+  useEffect(() => {
+    player.setReference(referenceUrl ?? null);
+  }, [player, referenceUrl]);
+
+  useEffect(() => {
+    player.setReferenceEnabled(refOn);
+  }, [player, refOn]);
+
+  useEffect(() => {
+    player.setReferenceOffset(refMs / 1000);
+  }, [player, refMs]);
 
   useEffect(() => {
     let lastSec = -1;
@@ -166,6 +185,20 @@ export default function Transport({ player, duration, disabled, hasPedal }: Prop
       <div className="ml-auto flex items-center gap-1.5">
         <button
           type="button"
+          onClick={() => setRefOn((v) => !v)}
+          disabled={disabled || !referenceUrl}
+          className={`flex h-9 items-center gap-1.5 rounded-md px-2 text-[11px] font-semibold uppercase tracking-wider ring-1 transition disabled:opacity-40 ${
+            refOn
+              ? "bg-emerald-400/20 text-emerald-100 ring-emerald-400/50"
+              : "text-slate-400 ring-white/10 hover:text-emerald-200"
+          }`}
+          title="Putar rekaman asli bersamaan — cara paling jujur mengecek hasilnya"
+        >
+          <Headphones size={15} />
+          <span className="hidden sm:inline">Asli</span>
+        </button>
+        <button
+          type="button"
           onClick={() => {
             const next = !muted;
             setMuted(next);
@@ -195,6 +228,55 @@ export default function Transport({ player, duration, disabled, hasPedal }: Prop
           />
         </div>
       </div>
+
+      {refOn && (
+        <div className="order-last flex w-full flex-wrap items-center gap-x-2 gap-y-1 border-t border-white/5 pt-2 text-[11px] text-slate-400">
+          <span className="font-semibold uppercase tracking-wider text-emerald-200/80">
+            Rekaman asli
+          </span>
+          <div className="flex items-center overflow-hidden rounded-md ring-1 ring-white/10">
+            <button
+              type="button"
+              onClick={() => setRefMs((v) => Math.max(-2000, v - 50))}
+              className="h-7 px-2 text-slate-300 hover:bg-white/10"
+              title="Maju 50 ms"
+            >
+              ½×
+            </button>
+            <span className="min-w-14 bg-white/5 px-2 py-1 text-center font-mono tabular-nums text-emerald-100">
+              {refMs > 0 ? "+" : ""}
+              {refMs} ms
+            </span>
+            <button
+              type="button"
+              onClick={() => setRefMs((v) => Math.min(2000, v + 50))}
+              className="h-7 px-2 text-slate-300 hover:bg-white/10"
+              title="Mundur 50 ms"
+            >
+              ¼×
+            </button>
+            <button
+              type="button"
+              onClick={() => setRefMs(0)}
+              className="grid h-7 w-7 place-items-center text-slate-400 hover:bg-white/10 hover:text-cyan-200"
+              title="Reset ke 0"
+            >
+              <RotateCcw size={12} />
+            </button>
+          </div>
+          <span className="text-slate-600">
+            {refMs === 0
+              ? "sejajar dengan transkripsi"
+              : "geser sampai piano dan rekaman terdengar bersamaan"}
+          </span>
+          {typeof alignMs === "number" && alignMs !== 0 && (
+            <span className="rounded bg-amber-400/15 px-1.5 py-0.5 text-amber-200/90">
+              pipeline mengoreksi {alignMs > 0 ? "+" : ""}
+              {alignMs} ms
+            </span>
+          )}
+        </div>
+      )}
     </div>
   );
 }

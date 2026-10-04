@@ -181,8 +181,16 @@ def prepare(src_wav: Path, dst_wav: Path, opts: dict, log: Log) -> Path:
             return src_wav
 
         before = y.shape[0]
-        # drop digital silence
-        y, _ = librosa.effects.trim(y, top_db=45)
+        # NEVER drop audio from the timeline here. This used to call
+        # librosa.effects.trim(top_db=45), which removed ~1.8s of leading silence
+        # from a 199.9s recording. The model then transcribed the trimmed audio, so
+        # every note in the MIDI came out shifted earlier by that amount and the
+        # transcription no longer lined up with the recording the user was watching
+        # (chroma similarity against the original collapsed from 0.92 to 0.58, and a
+        # global +1.1s lag was what best re-aligned it). Gate the silence out
+        # instead of cutting it — the model still never sees it, but the timeline is
+        # preserved exactly.
+        y = _gate_silence(y, top_db=45)
         peak = float(np.max(np.abs(y))) if y.size else 0.0
         if peak > 1e-6:
             y = (y / peak) * 0.92                       # peak normalise
@@ -197,6 +205,17 @@ def prepare(src_wav: Path, dst_wav: Path, opts: dict, log: Log) -> Path:
         if y.size < sr:                                  # <1s of content left
             y, sr = librosa.load(str(src_wav), sr=config.ANALYSIS_SR, mono=True)
 
+        # Invariant: the prepared audio must stay on the source timeline, otherwise
+        # every downstream timestamp (notes, pedal, score) is silently wrong.
+        if y.shape[0] != before:
+            log("transcribing",
+                f"peringatan: panjang audio berubah {before / sr:.3f}s → "
+                f"{y.shape[0] / sr:.3f}s, timestamp bisa bergeser")
+            if y.shape[0] < before:
+                y = np.pad(y, (0, before - y.shape[0]))
+            else:
+                y = y[:before]
+
         sf.write(str(dst_wav), y.astype(np.float32), sr, subtype="PCM_16")
         log("transcribing",
             f"pra-proses: normalisasi + band-limit {opts.get('min_frequency'):.0f}-"
@@ -207,6 +226,26 @@ def prepare(src_wav: Path, dst_wav: Path, opts: dict, log: Log) -> Path:
     except Exception as exc:                                # noqa: BLE001
         log("transcribing", f"pra-proses dilewati ({exc})")
         return src_wav
+
+
+def _gate_silence(y: np.ndarray, top_db: float = 45.0) -> np.ndarray:
+    """Zero out leading/trailing silence *without* changing the timeline.
+
+    Trimming silence is worth doing — it keeps the model from chewing on dead air —
+    but `librosa.effects.trim` returns a shorter array, which shifts every
+    timestamp the model produces. Gate instead of cut: same length, same timeline.
+    """
+    try:
+        import librosa
+
+        _trimmed, (start, end) = librosa.effects.trim(y, top_db=top_db)
+    except Exception:                                        # noqa: BLE001
+        return y
+    if start <= 0 and end >= len(y):
+        return y
+    out = np.zeros_like(y)
+    out[start:end] = y[start:end]
+    return out
 
 
 def _bandlimit(y: np.ndarray, sr: int, low: float, high: float) -> np.ndarray:
