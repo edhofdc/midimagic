@@ -374,13 +374,23 @@ export default function Studio() {
       {notes.length > 0 && job?.pedal && !job.pedal.skipped && (
         <p className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border border-pink-500/20 bg-pink-500/[0.06] px-3 py-2 text-[11px] text-pink-100/80">
           <Zap size={11} className="text-pink-300" />
-          Sustain dideteksi dari rekaman:
+          {job.pedal.from_engine
+            ? `Sustain diprediksi model (${job.pedal.source ?? "engine"}):`
+            : "Sustain dideteksi dari rekaman:"}
           <span className="font-mono text-pink-200">{job.pedal.segments ?? 0} segmen</span>
           <span className="text-slate-500">·</span>
           <span className="font-mono text-pink-200">
             {Math.round((job.pedal.ratio ?? 0) * 100)}% durasi
           </span>
           <span className="text-slate-500">— mode Auto memakai ini</span>
+          {job.pedal.extended && (
+            <>
+              <span className="text-slate-500">·</span>
+              <span className="font-mono text-pink-200/80">
+                {job.pedal.extended.extended ?? 0} not diperpanjang lewat pedal
+              </span>
+            </>
+          )}
         </p>
       )}
 

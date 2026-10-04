@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from . import config, db
-from .pipeline import align, fetch, post, stems as stems_mod, sustain, transcribe
+from .pipeline import align, fetch, pedal_extend, post, stems as stems_mod, sustain, transcribe
 
 _pool = ThreadPoolExecutor(max_workers=config.MAX_WORKERS, thread_name_prefix="midimagic")
 
@@ -125,17 +125,39 @@ def _run(job_id: str) -> None:
 
     # ---------------------------------------------------------- 5. finalize
     _stage(job_id, "finalizing", 0.88, "membersihkan hasil MIDI")
+    # The cleanup defaults are tuned for a FRAME-based model, where short quiet
+    # events are nearly always noise and abutting same-pitch events are one note
+    # the model split in two. An EVENT-based model (transkun) reports how long the
+    # key was actually held — median 0.054s on a fast etude — and re-strikes the
+    # same pitch deliberately. Applying the frame-based thresholds to it deleted
+    # 864 of 2565 notes (the min_note_length of 58ms alone killed everything
+    # shorter than that) and cut onset recall against the recording from 0.884 to
+    # 0.516. So: for transkun, never drop short notes and never glue re-strikes.
+    if engine == "transkun":
+        clean_min_len = float(raw_opts.get("min_note_length") or 0.015)
+        clean_merge = float(raw_opts.get("merge_gap") if raw_opts.get("merge_gap") is not None else 0.0)
+        clean_vel = int(raw_opts.get("min_velocity") if raw_opts.get("min_velocity") is not None else 10)
+        clean_drop_short = False
+    else:
+        clean_min_len = float(opts["min_note_length"])
+        clean_merge = float(raw_opts.get("merge_gap", 0.055))
+        clean_vel = int(raw_opts.get("min_velocity", 28))
+        clean_drop_short = True
+
     summary = post.clean(
         midi_path,
-        min_note_len=float(opts["min_note_length"]),
-        merge_gap=float(raw_opts.get("merge_gap", 0.055)),
-        min_velocity=int(raw_opts.get("min_velocity", 28)),
+        min_note_len=clean_min_len,
+        drop_short=clean_drop_short,
+        merge_gap=clean_merge,
+        min_velocity=clean_vel,
         quantize=float(raw_opts.get("quantize", 0.0) or 0.0),
     )
     log("finalizing",
         f"{summary['note_count']} not, pitch {summary['min_pitch']}–{summary['max_pitch']}"
         + (f", {summary['merged']} fragmen digabung" if summary.get("merged") else "")
-        + (f", {summary['dropped']} noise dibuang" if summary.get("dropped") else ""))
+        + (f", {summary['dropped']} noise dibuang" if summary.get("dropped") else "")
+        + (" [profil event: not pendek & re-strike dipertahankan]"
+           if engine == "transkun" else ""))
 
     # ---------------------------------------------------------- 5b. align
     # Nothing downstream is trustworthy until the notes sit on the recording's own
@@ -146,14 +168,40 @@ def _run(job_id: str) -> None:
     align_info = align.align(wav, midi_path, log=log)
 
     # ---------------------------------------------------------- 6. pedal (CC64)
-    _stage(job_id, "sustain", 0.94, "mendeteksi sustain pedal dari rekaman")
-    pedal = sustain.analyze(prepared, midi_path, log)
-    if not pedal.get("skipped"):
-        # report from the file itself so the numbers match what the player reads
-        written = post.pedal_summary(midi_path)
-        pedal = {**pedal, "segments": written["segments"],
-                 "pedalled_seconds": written["pedalled_seconds"],
-                 "ratio": written["ratio"]}
+    _stage(job_id, "sustain", 0.94, "sustain pedal")
+    model_pedal = post.pedal_summary(midi_path)
+    if model_pedal.get("segments"):
+        # The engine predicted the sustain pedal itself. That is a trained
+        # prediction, not an inference from gap energy, so prefer it outright.
+        pedal = {
+            "source": engine,
+            "from_engine": True,
+            "segments": model_pedal["segments"],
+            "pedalled_seconds": model_pedal["pedalled_seconds"],
+            "ratio": model_pedal["ratio"],
+            "skipped": False,
+        }
+        log("sustain", f"pedal dari model ({engine}): {pedal['segments']} segmen, "
+                       f"{pedal['ratio'] * 100:.0f}% durasi")
+    else:
+        pedal = sustain.analyze(prepared, midi_path, log)
+        if not pedal.get("skipped"):
+            # report from the file itself so the numbers match what the player reads
+            written = post.pedal_summary(midi_path)
+            pedal = {**pedal, "segments": written["segments"],
+                     "pedalled_seconds": written["pedalled_seconds"],
+                     "ratio": written["ratio"]}
+
+    # Hold key-press durations through the pedal. Transkun reports how long the
+    # finger held the key (median 0.054s on a fast etude), which is honest but
+    # sounds plucked and makes the score read as staccato everywhere.
+    if engine == "transkun" and pedal.get("segments"):
+        ext = pedal_extend.extend_by_pedal(
+            midi_path, midi_path, max_extend=config.TRANSKUN_MAX_EXTEND)
+        pedal["extended"] = ext
+        log("finalizing",
+            f"not diperpanjang lewat pedal: {ext['extended']}/{ext['notes']} "
+            f"(+{ext['added_seconds']:.0f}s bunyi)")
 
     db.update_job(
         job_id, status="done", stage="done", progress=1.0, message="selesai",

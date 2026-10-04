@@ -39,5 +39,21 @@ DEMUCS_TWO_STEMS = "vocals"
 # Audio analysis (transcription + pedal detection)
 ANALYSIS_SR = int(os.environ.get("MIDIMAGIC_ANALYSIS_SR", "22050"))
 
+# Transkun — piano-specialist transcription (MIT, Yujia Yan).
+#
+# It needs a different dependency set than the main backend venv (torchaudio,
+# ncls, moduleconf, pydub, soxr, mir_eval, plus the audioop-lts backport that
+# Python 3.13 removed), so it lives in its own isolated venv and is invoked as a
+# subprocess. Keeping it separate means a transkun install can never break the
+# Demucs/basic-pitch environment that already works.
+TRANSKUN_PYTHON = os.environ.get(
+    "MIDIMAGIC_TRANSKUN_PYTHON", str(BASE_DIR / ".venv-transkun" / "bin" / "python")
+)
+TRANSKUN_DEVICE = os.environ.get("MIDIMAGIC_TRANSKUN_DEVICE", "cpu")
+TRANSKUN_ENABLED = os.environ.get("MIDIMAGIC_TRANSKUN", "auto").lower() not in ("0", "off", "false", "no")
+# Transkun reports key-press durations, not sounding durations, so its output is
+# held through the sustain pedal before it reaches the player or the score.
+TRANSKUN_MAX_EXTEND = float(os.environ.get("MIDIMAGIC_TRANSKUN_MAX_EXTEND", "6.0"))
+
 for _d in (DATA_DIR, JOBS_DIR, MODELS_DIR):
     _d.mkdir(parents=True, exist_ok=True)

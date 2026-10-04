@@ -143,8 +143,31 @@ def resolve_options(opts: dict) -> dict:
     return merged
 
 
+def transkun_available() -> bool:
+    """Is the isolated transkun venv present and importable?"""
+    if not config.TRANSKUN_ENABLED:
+        return False
+    exe = Path(config.TRANSKUN_PYTHON)
+    if not exe.exists():
+        return False
+    try:
+        r = subprocess.run([str(exe), "-c", "import transkun"],
+                           capture_output=True, text=True, timeout=180)
+        return r.returncode == 0
+    except Exception:                                        # noqa: BLE001
+        return False
+
+
 def engine_available() -> str:
-    """Report which transcription engine will be used."""
+    """Which engine will be used by default.
+
+    Transkun first: it is a piano specialist (event-based semi-CRF, published
+    note onset+offset F1 0.88 on MAPS / 0.98 on Maestro) and it predicts the
+    sustain pedal itself. basic-pitch stays for non-piano material — it is
+    polyphonic and general, where transkun would only hallucinate a piano.
+    """
+    if transkun_available():
+        return "transkun"
     exe = _basic_pitch_bin()
     if exe:
         try:
@@ -263,6 +286,12 @@ def _bandlimit(y: np.ndarray, sr: int, low: float, high: float) -> np.ndarray:
 
 def transcribe(src_wav: Path, out_midi: Path, engine: str, opts: dict, log: Log) -> Path:
     out_midi.parent.mkdir(parents=True, exist_ok=True)
+    if engine == "transkun":
+        try:
+            return _run_transkun(src_wav, out_midi, opts, log)
+        except TranscribeError as exc:
+            log("transcribing", f"transkun gagal → fallback basic-pitch: {exc}")
+            engine = "basic-pitch"
     if engine == "basic-pitch":
         try:
             return _run_basic_pitch(src_wav, out_midi, opts, log)
@@ -273,6 +302,48 @@ def transcribe(src_wav: Path, out_midi: Path, engine: str, opts: dict, log: Log)
         return _run_pyin(src_wav, out_midi, float(opts.get("min_note_length", 0.06)), log,
                          tempo=float(opts.get("tempo") or 120.0))
     raise TranscribeError(f"engine tidak dikenal / tidak tersedia: {engine}")
+
+
+def _retempo(src: Path, dst: Path, bpm: float) -> Path:
+    """Rewrite a MIDI with a different tempo header, keeping every absolute time.
+
+    pretty_midi stores events in seconds and converts to ticks on write using the
+    header tempo, so moving the instruments into a fresh PrettyMIDI that carries
+    the right tempo preserves all timings while fixing the bar lines.
+    """
+    src_pm = pretty_midi.PrettyMIDI(str(src))
+    out = pretty_midi.PrettyMIDI(initial_tempo=float(bpm))
+    out.instruments = src_pm.instruments
+    out.write(str(dst))
+    return dst
+
+
+def _run_transkun(src_wav: Path, out_midi: Path, opts: dict, log: Log) -> Path:
+    """Piano-specialist transcription via the isolated transkun venv."""
+    exe = config.TRANSKUN_PYTHON
+    if not Path(exe).exists():
+        raise TranscribeError(f"transkun python tidak ada: {exe}")
+
+    templ = out_midi.parent / "transkun_raw.mid"
+    log("transcribing",
+        f"transkun: model semi-CRF piano, device={config.TRANSKUN_DEVICE} "
+        f"(khusus piano; lebih lambat dari basic-pitch)")
+    cmd = [exe, "-m", "transkun.transcribe", str(src_wav), str(templ),
+           "--device", config.TRANSKUN_DEVICE]
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=14400)
+    if not templ.exists():
+        raise TranscribeError(
+            f"transkun exit {r.returncode}: {(r.stderr or r.stdout)[-500:]}")
+    if r.returncode != 0:
+        log("transcribing", f"transkun exit {r.returncode} tapi menghasilkan MIDI")
+
+    # transkun always writes 120 BPM; without the real tempo every bar line in
+    # the rendered score lands wrong (same reason as the basic-pitch path).
+    _retempo(templ, out_midi, float(opts.get("tempo") or 120.0))
+    templ.unlink(missing_ok=True)
+    log("transcribing", f"transkun: MIDI ditulis ({out_midi.name}, tempo "
+                        f"{float(opts.get('tempo') or 120.0):.1f} BPM)")
+    return out_midi
 
 
 def _run_basic_pitch(src_wav: Path, out_midi: Path, opts: dict, log: Log) -> Path:

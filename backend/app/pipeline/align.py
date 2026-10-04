@@ -62,7 +62,12 @@ def estimate_lag(src_wav: Path, midi_path: Path,
                  max_lag: float = MAX_LAG) -> tuple[float, float, float]:
     """Return (lag_seconds, similarity_at_best, similarity_at_zero).
 
-    Positive lag = MIDI sits late vs the audio.
+    SIGN CONVENTION — positive lag means the MIDI is EARLY relative to the
+    recording (its event at time t belongs at t + lag). Verified empirically:
+    shifting a MIDI 0.5s LATER reports lag -464ms. Correcting an early MIDI
+    therefore means shifting it later by +lag. Getting this backwards silently
+    doubles the offset instead of removing it, which is exactly what the first
+    version did — 23ms of true offset came out as 70ms after "correction".
     """
     oc = _chroma_of_audio(src_wav)
     if oc.shape[1] == 0:
@@ -92,7 +97,7 @@ def estimate_lag(src_wav: Path, midi_path: Path,
 
 
 def apply_shift(midi_path: Path, out_path: Path, shift: float) -> Path:
-    """Move every event in the MIDI by `shift` seconds."""
+    """Move every event in the MIDI by `shift` seconds (positive = later)."""
     pm = pretty_midi.PrettyMIDI(str(midi_path))
     for inst in pm.instruments:
         for n in inst.notes:
@@ -107,13 +112,20 @@ def apply_shift(midi_path: Path, out_path: Path, shift: float) -> Path:
 def align(src_wav: Path, midi_path: Path, log=None, max_lag: float = MAX_LAG,
           threshold: float = APPLY_THRESHOLD, max_apply: float = MAX_APPLY,
           min_gain: float = MIN_GAIN) -> dict:
-    """Measure and correct the offset in place. Returns a summary dict.
+    """Measure and correct the offset in place, then verify the correction.
 
     Deliberately conservative: a chroma match over a whole piece has plenty of
-    near-ties, and shifting a MIDI by seconds because of a spurious peak would
-    wreck a result that was already fine. So only shift when the offset is big
-    enough to matter, small enough to be plausible, AND the fit actually improves
-    on leaving it alone. Anything else is reported and left untouched.
+    near-ties, and shifting a MIDI on the strength of a spurious peak would wreck
+    a result that was already fine. Three gates, then a check:
+
+      1. the offset must be big enough to matter (>= threshold)
+      2. small enough to be plausible (<= max_apply)
+      3. the fit must actually improve on leaving it alone (>= min_gain)
+
+    ...and after shifting, the lag is measured again. If the residual offset got
+    WORSE, the shift is rolled back. That last step is what makes this safe: the
+    estimator is a heuristic and the sign convention is easy to get backwards
+    (it was), so the correction is never trusted — only its verified effect is.
     """
     lag, sim, zero = estimate_lag(src_wav, midi_path, max_lag=max_lag)
     info = {"lag_seconds": lag, "similarity": sim, "similarity_at_zero": zero,
@@ -126,11 +138,22 @@ def align(src_wav: Path, midi_path: Path, log=None, max_lag: float = MAX_LAG,
     elif sim < zero + min_gain:
         info["reason"] = f"tidak cukup yakin (sim {sim:.3f} vs {zero:.3f} di 0)"
     else:
+        # positive lag = MIDI early → move it later
+        backup = midi_path.read_bytes()
         tmp = midi_path.with_suffix(".shifted.mid")
-        apply_shift(midi_path, tmp, -lag)
+        apply_shift(midi_path, tmp, lag)
         tmp.replace(midi_path)
-        info["applied"] = True
-        info["reason"] = "dikoreksi"
+
+        after_lag, after_sim, _ = estimate_lag(src_wav, midi_path, max_lag=max_lag)
+        info["lag_after"] = after_lag
+        if abs(after_lag) > abs(lag) + 0.005:
+            midi_path.write_bytes(backup)
+            info["reason"] = (f"koreksi dibatalkan — sisa offset malah membesar "
+                              f"({lag * 1000:+.0f} → {after_lag * 1000:+.0f} ms)")
+        else:
+            info["applied"] = True
+            info["reason"] = (f"dikoreksi ke {after_lag * 1000:+.0f} ms "
+                              f"(sim {after_sim:.3f})")
 
     if log:
         detail = (f"alignment: {lag * 1000:+.0f} ms (sim {sim:.3f}, "

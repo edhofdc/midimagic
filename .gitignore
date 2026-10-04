@@ -38,3 +38,6 @@ backend/data/
 *.swp
 .idea/
 .vscode/
+
+# transkun engine runs from its own isolated venv
+.venv-transkun/

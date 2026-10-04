@@ -44,7 +44,7 @@ export default function SourcePanel({
   const [stems, setStems] = useState(false);
   const [stemMode, setStemMode] = useState<"vocals" | "full">("vocals");
   const [target, setTarget] = useState<"melody" | "instrumental" | "mix">("melody");
-  const [engine, setEngine] = useState<"" | "basic-pitch" | "librosa-pyin">("");
+  const [engine, setEngine] = useState<"" | "transkun" | "basic-pitch" | "librosa-pyin">("");
   const [accuracy, setAccuracy] = useState<"fast" | "balanced" | "precise">("balanced");
   const [advanced, setAdvanced] = useState(false);
   const [customThresholds, setCustomThresholds] = useState(false);
@@ -258,21 +258,33 @@ export default function SourcePanel({
 
         {advanced && (
           <div className="grid gap-3 rounded-lg bg-black/20 p-3 text-xs ring-1 ring-white/10 sm:grid-cols-2">
-            <label className="space-y-1">
+            <label className="space-y-1 sm:col-span-2">
               <span className="text-slate-400">Engine transkripsi</span>
               <select
                 value={engine}
                 onChange={(e) =>
-                  setEngine(e.target.value as "" | "basic-pitch" | "librosa-pyin")
+                  setEngine(e.target.value as "" | "transkun" | "basic-pitch" | "librosa-pyin")
                 }
                 className="w-full rounded-md border border-white/10 bg-black/50 px-2 py-1.5 text-slate-200"
               >
                 <option value="">
                   Otomatis ({health?.engines.transcription ?? "…"})
                 </option>
-                <option value="basic-pitch">basic-pitch (polifonik)</option>
+                {(health?.config.engines ?? ["transkun", "basic-pitch", "librosa-pyin"]).includes(
+                  "transkun"
+                ) && (
+                  <option value="transkun">transkun — khusus piano, paling presisi</option>
+                )}
+                <option value="basic-pitch">basic-pitch (polifonik umum)</option>
                 <option value="librosa-pyin">librosa pyin (melodi monofonik)</option>
               </select>
+              <span className="block text-[11px] leading-relaxed text-slate-500">
+                {engine === "transkun" || (!engine && health?.engines.transcription === "transkun")
+                  ? "transkun memakai model piano semi-CRF (MIT, Yujia Yan), memprediksi pedal sendiri, dan memperpanjang not lewat pedal. Khusus piano — untuk campuran vokal/instrumen pakai basic-pitch. Lebih lambat (~0.6× durasi audio di 4 CPU)."
+                  : engine === "basic-pitch" || (!engine && health?.engines.transcription === "basic-pitch")
+                    ? "basic-pitch: model polifonik umum. Cepat, tapi presisi piano di bawah transkun. Slider threshold di bawah hanya berlaku untuk engine ini."
+                    : "pyin: pelacak melodi monofonik, untuk materi satu nada (vokal, seruling). Tidak untuk piano."}
+              </span>
             </label>
             {(
               [

@@ -109,6 +109,7 @@ def health() -> dict:
         "time": time.time(),
         "engines": {
             "transcription": transcribe.engine_available(),
+            "transkun": transcribe.transkun_available(),
             "basic_pitch": bool(transcribe._basic_pitch_bin()),
             "librosa": bool(importlib.util.find_spec("librosa")),
             "demucs": demucs_ok,
@@ -122,6 +123,9 @@ def health() -> dict:
             "max_upload_mb": config.MAX_UPLOAD_BYTES // (1024 * 1024),
             "accuracy_presets": list(transcribe.PRESETS.keys()),
             "default_accuracy": transcribe.DEFAULT_PRESET,
+            "engines": [e for e in ("transkun", "basic-pitch", "librosa-pyin")
+                        if e != "transkun" or transcribe.transkun_available()],
+            "default_engine": transcribe.engine_available(),
         },
         "stats": db.stats(),
     }

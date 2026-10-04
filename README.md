@@ -357,6 +357,73 @@ di HP ini diam-diam membuat penanda tetap "1/52" walau tombolnya bekerja. Pakai
 *callback ref* (`useState` + `ref={setEl}`) supaya pengukuran ikut elemen yang
 benar-benar ter-mount.
 
+## Engine transkripsi
+
+Dua engine, dan pemilihannya berpengaruh besar pada presisi.
+
+| engine | jenis | untuk | kecepatan (4 vCPU) |
+|---|---|---|---|
+| **transkun** (default) | event-based neural semi-CRF, khusus piano | piano solo | ~0.6× durasi audio |
+| basic-pitch | frame-based, polifonik umum | campuran vokal/instrumen, stem | ~0.08× durasi audio |
+| librosa pyin | pelacak f0 monofonik | satu nada (vokal, seruling) | cepat |
+
+`transkun` adalah [Transkun](https://github.com/Yujia-Yan/Transkun) (Yujia Yan, MIT) —
+prediksi **interval not langsung** via semi-CRF, bukan per-frame, dan **memprediksi
+pedal sustain sendiri** (CC64 + CC67). Dipasang di venv terpisah:
+
+```bash
+bash scripts/setup_transkun.sh
+```
+
+### Hasil terukur pada Rachmaninoff Op. 39 No. 6 (199.9s)
+
+Semua metrik diukur terhadap **rekaman sumber**, bukan `prepared.wav`:
+
+| engine | not | chroma | jendela ≥0.85 | recall onset | onset luput |
+|---|---|---|---|---|---|
+| basic-pitch | 1546 | 0.879 | 15/20 | 0.867 | 54 |
+| transkun (pipeline) | 2483 | **0.894** | **18/20** | **1.000** | **0** |
+
+Recall 1.000 = transkun menemukan **setiap** onset yang terdeteksi di rekaman, tanpa
+satu pun luput. Precision onset-nya (0.185) **persis di plafon teoretis** untuk
+pembanding ini: `librosa.onset_detect` hanya menemukan 405 onset di lagu padat ini,
+jadi engine mana pun yang mengeluarkan >405 onset tidak mungkin melewati 405/N.
+Baca **recall dan chroma**, jangan precision, saat membandingkan engine di sini.
+
+### Dua bug yang hanya ketahuan karena diukur
+
+Integrasi ini awalnya membuat hasil **lebih buruk**, dan penyebabnya bukan modelnya:
+
+**1. Pembersihan MIDI yang tidak sadar-engine.** `post.clean` ditala untuk model
+frame-based, di mana event pendek-dan-lemah hampir selalu noise. Transkun melaporkan
+**durasi tekanan tuts** (median 0.054s pada etude cepat) dan sengaja me-restrike nada
+yang sama. `min_note_length=0.058s` saja **menghapus 864 dari 2565 not**, dan recall
+onset jatuh 0.884 → 0.516. Sekarang transkun memakai "profil event": tidak ada not
+pendek yang dibuang, tidak ada re-strike yang ditempel.
+
+**2. Tanda koreksi alignment terbalik.** `align.py` menggeser MIDI sebesar `-lag`,
+padahal konvensinya lag positif = MIDI **terlalu cepat**, jadi koreksinya `+lag`.
+Akibatnya offset 23 ms **berubah jadi 70 ms** — koreksi menggandakan error alih-alih
+menghapusnya. Diverifikasi empiris: menggeser MIDI 0.5s lebih lambat melaporkan
+lag −464 ms.
+
+Sekarang `align` juga **memverifikasi koreksinya sendiri**: setelah menggeser, lag
+diukur ulang, dan kalau sisa offset malah membesar, pergeseran **dibatalkan**. Estimator
+chroma itu heuristik dan tandanya mudah terbalik (dan memang terbalik), jadi yang
+dipercaya bukan koreksinya, tapi efek terukurnya.
+
+### Memperpanjang not lewat pedal
+
+Transkun melaporkan durasi **tekanan tuts**, bukan durasi **bunyi**. Di bawah pedal,
+not berbunyi selama pedal ditahan. Tanpa koreksi ini playback terdengar dipetik-petik
+dan partitur terbaca staccato di mana-mana. `pipeline/pedal_extend.py` menahan setiap
+not sampai pedal dilepas, dibatasi tiga hal: tidak melewati serangan berikutnya pada
+nada yang sama (restrike meredam senar), tidak melewati akhir rekaman, dan tidak lebih
+dari `MIDIMAGIC_TRANSKUN_MAX_EXTEND` (default 6s).
+
+Pada Rachmaninoff: **1213 dari 2483 not diperpanjang, +484s bunyi**, median not
+0.054s → 0.134s.
+
 ## Uji
 
 ```bash

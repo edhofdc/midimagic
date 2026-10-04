@@ -50,7 +50,7 @@ export interface JobOptions {
   stems?: boolean;
   stem_mode?: "vocals" | "full";
   target?: "melody" | "vocals" | "instrumental" | "mix";
-  engine?: "basic-pitch" | "librosa-pyin";
+  engine?: "transkun" | "basic-pitch" | "librosa-pyin";
   /** accuracy preset — thresholds below only apply when set explicitly */
   accuracy?: "fast" | "balanced" | "precise";
   onset_threshold?: number;
@@ -67,6 +67,10 @@ export interface JobOptions {
 export interface PedalInfo {
   segments?: number;
   pedalled_seconds?: number;
+  /** "transkun" when the engine predicted the pedal itself */
+  source?: string;
+  from_engine?: boolean;
+  extended?: { notes?: number; extended?: number; added_seconds?: number };
   ratio?: number;
   median_gap_ratio?: number;
   gaps?: number;
@@ -78,6 +82,7 @@ export interface Health {
   time: number;
   engines: {
     transcription: string;
+    transkun: boolean;
     basic_pitch: boolean;
     librosa: boolean;
     demucs: boolean;
@@ -91,6 +96,8 @@ export interface Health {
     max_upload_mb: number;
     accuracy_presets?: string[];
     default_accuracy?: string;
+    engines?: string[];
+    default_engine?: string;
   };
   stats: {
     total: number;
