@@ -339,6 +339,24 @@ Verifikasi setelah build: `curl -sD - -o /dev/null http://127.0.0.1:8891/ | grep
 harus menunjukkan `no-store`. Kalau browser sudah terlanjur memegang HTML lama, **hard
 refresh** (Ctrl/Cmd+Shift+R) sekali sudah cukup.
 
+### Keyboard 88 tuts: kenapa terlihat "kurang"
+
+Roll-nya **selalu** menggambar 88 tuts (A0=21 → C8=108, 52 tuts putih). Yang berubah
+adalah zoom: lebar kanvas = `52 × zoom`, jadi pada HP 390 px dengan zoom default 26
+hanya **14 dari 52 tuts putih** yang masuk layar — dan itu terbaca sebagai "pianonya
+kurang". Slider zoom dulu minimum 14, sehingga di HP mustahil melihat semuanya.
+
+Sekarang: slider turun sampai 5, ada tombol **"muat 88 tuts"** (menghitung
+`zoom = lebar container / 52`), dan ada penanda status di sebelahnya — hijau
+`88 tuts (A0–C8)` kalau semuanya terlihat, kuning `14/52 tuts putih terlihat` kalau
+tidak, dengan tooltip yang menjelaskan.
+
+Catatan implementasi: pembungkus roll berada di dalam tab yang dirender kondisional,
+jadi `useRef` biasa bisa kosong saat effect jalan dan lebarnya tidak pernah terukur —
+di HP ini diam-diam membuat penanda tetap "1/52" walau tombolnya bekerja. Pakai
+*callback ref* (`useState` + `ref={setEl}`) supaya pengukuran ikut elemen yang
+benar-benar ter-mount.
+
 ## Uji
 
 ```bash

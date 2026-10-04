@@ -5,6 +5,7 @@ import { AudioWaveform, HardDrive, Loader2, Sparkles, Zap } from "lucide-react";
 import { api, API_BASE, type Health, type Job, type JobOptions } from "@/lib/api";
 import type { InstrumentId, MidiPlayer, NoteEvent, PedalEvent } from "@/lib/audio";
 import { INSTRUMENTS } from "@/lib/instruments";
+import { FIRST_MIDI, LAST_MIDI, KEY_COUNT, WHITE_COUNT, midiToName } from "@/lib/keys";
 import { loadMidi, sanitizeNotes } from "@/lib/midi";
 import { useIsMobile } from "@/lib/useMediaQuery";
 import SourcePanel from "@/components/SourcePanel";
@@ -31,6 +32,12 @@ export default function Studio() {
   const [transpose, setTranspose] = useState(0);
   const [zoom, setZoom] = useState(26);
   const [visibleSeconds, setVisibleSeconds] = useState(3.5);
+  // callback ref, not useRef: the wrapper is inside a conditionally rendered tab,
+  // so a plain ref captured at effect time can be null (or a stale node) and the
+  // width is then never measured — which silently broke the "88 tuts" readout on
+  // phones. A callback ref fires exactly when the node mounts, wherever it mounts.
+  const [rollEl, setRollEl] = useState<HTMLDivElement | null>(null);
+  const [wrapW, setWrapW] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [uploadPct, setUploadPct] = useState<number | null>(null);
@@ -296,10 +303,36 @@ export default function Studio() {
     </>
   );
 
+  // The roll always renders all 88 keys, but zoom sets how much of it fits on
+  // screen. Without knowing the container width the UI cannot say whether the
+  // user is even able to see the whole piano — on a phone at the default zoom
+  // only ~15 of the 52 white keys fit, which reads as "the piano is missing keys".
+  useEffect(() => {
+    if (!rollEl || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => setWrapW(rollEl.clientWidth));
+    ro.observe(rollEl);
+    setWrapW(rollEl.clientWidth);
+    return () => ro.disconnect();
+  }, [rollEl, tab]);
+
+  const fitAllKeys = useCallback(() => {
+    const w = rollEl?.clientWidth || wrapW || 0;
+    if (!w) return;
+    setZoom(Math.max(5, Math.min(48, Math.floor(w / WHITE_COUNT))));
+    // the scroller lives inside PianoRoll, not on the wrapper
+    rollEl?.querySelector<HTMLElement>(".overflow-x-auto")?.scrollTo({ left: 0 });
+  }, [rollEl, wrapW]);
+
+  const visibleWhite = Math.min(
+    WHITE_COUNT,
+    Math.max(1, Math.round(((wrapW || rollEl?.clientWidth || 0)) / Math.max(1, zoom))),
+  );
+  const showsWholePiano = (wrapW || rollEl?.clientWidth || 0) >= WHITE_COUNT * zoom - 2;
+
   const playerGroup = (
     <>
       {player ? (
-        <div className="relative">
+        <div className="relative" ref={setRollEl}>
           <PianoRoll
             player={player}
             notes={notes}
@@ -356,14 +389,34 @@ export default function Studio() {
           Zoom piano
           <input
             type="range"
-            min={14}
+            min={5}
             max={48}
             step={1}
             value={zoom}
             onChange={(e) => setZoom(Number(e.target.value))}
             className="h-1.5 w-24 cursor-pointer appearance-none rounded-full bg-white/10 accent-cyan-400"
           />
+          <button
+            type="button"
+            onClick={fitAllKeys}
+            className="rounded-md bg-cyan-500/15 px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-cyan-100 ring-1 ring-cyan-400/40 transition hover:bg-cyan-400/25"
+            title={`Muat seluruh ${KEY_COUNT} tuts (${midiToName(FIRST_MIDI)}–${midiToName(LAST_MIDI)}) ke layar`}
+          >
+            muat 88 tuts
+          </button>
         </label>
+        <span
+          className={`font-mono ${showsWholePiano ? "text-emerald-300/90" : "text-amber-300/80"}`}
+          title={
+            showsWholePiano
+              ? "Seluruh 88 tuts terlihat"
+              : "Hanya sebagian tuts terlihat — klik 'muat 88 tuts' untuk melihat semuanya"
+          }
+        >
+          {showsWholePiano
+            ? `${KEY_COUNT} tuts (${midiToName(FIRST_MIDI)}–${midiToName(LAST_MIDI)})`
+            : `${visibleWhite}/${WHITE_COUNT} tuts putih terlihat`}
+        </span>
         <label className="flex items-center gap-2">
           Rentang jatuh
           <input
