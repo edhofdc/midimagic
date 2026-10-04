@@ -24,6 +24,10 @@ HOP = 512
 MAX_LAG = 4.0
 # beyond this the "lag" is far more likely to be a bad chroma match than a real offset
 APPLY_THRESHOLD = 0.040
+# never move a MIDI further than this on the strength of a chroma match alone
+MAX_APPLY = 2.0
+# ...and only move it when doing so actually fits the recording better
+MIN_GAIN = 0.02
 
 
 def _chroma_of_audio(path: Path, sr: int = SR) -> np.ndarray:
@@ -55,31 +59,36 @@ def _chroma_of_midi(pm: pretty_midi.PrettyMIDI, frames: int, sr: int = SR) -> np
 
 
 def estimate_lag(src_wav: Path, midi_path: Path,
-                 max_lag: float = MAX_LAG) -> tuple[float, float]:
-    """Return (lag_seconds, similarity). Positive lag = MIDI sits late vs the audio."""
+                 max_lag: float = MAX_LAG) -> tuple[float, float, float]:
+    """Return (lag_seconds, similarity_at_best, similarity_at_zero).
+
+    Positive lag = MIDI sits late vs the audio.
+    """
     oc = _chroma_of_audio(src_wav)
     if oc.shape[1] == 0:
-        return 0.0, 0.0
+        return 0.0, 0.0, 0.0
     pm = pretty_midi.PrettyMIDI(str(midi_path))
     mc = _chroma_of_midi(pm, oc.shape[1])
     fps = SR / HOP
     span = int(max_lag * fps)
 
-    best_sim, best_lag = -1.0, 0
-    frames = oc.shape[1]
-    for lag in range(-span, span + 1):
-        # shifting the MIDI by `lag` means comparing oc[:, lag:] with mc[:, :-lag]
-        a0, a1 = max(0, lag), frames + min(0, lag)
-        b0, b1 = max(0, -lag), frames - max(0, lag)
+    def sim_at(lag: int) -> float:
+        a0, a1 = max(0, lag), oc.shape[1] + min(0, lag)
+        b0, b1 = max(0, -lag), oc.shape[1] - max(0, lag)
         m = min(a1 - a0, b1 - b0)
         if m < int(4 * fps):
-            continue
+            return -1.0
         a = oc[:, a0:a0 + m]
         b = mc[:, b0:b0 + m]
-        sim = float(np.mean(np.einsum("ij,ij->j", a, b)))
+        return float(np.mean(np.einsum("ij,ij->j", a, b)))
+
+    zero = sim_at(0)
+    best_sim, best_lag = -1.0, 0
+    for lag in range(-span, span + 1):
+        sim = sim_at(lag)
         if sim > best_sim:
             best_sim, best_lag = sim, lag
-    return best_lag / fps, best_sim
+    return best_lag / fps, best_sim, zero
 
 
 def apply_shift(midi_path: Path, out_path: Path, shift: float) -> Path:
@@ -96,29 +105,44 @@ def apply_shift(midi_path: Path, out_path: Path, shift: float) -> Path:
 
 
 def align(src_wav: Path, midi_path: Path, log=None, max_lag: float = MAX_LAG,
-          threshold: float = APPLY_THRESHOLD) -> dict:
-    """Measure and correct the offset in place. Returns a summary dict."""
-    lag, sim = estimate_lag(src_wav, midi_path, max_lag=max_lag)
-    info = {"lag_seconds": lag, "similarity": sim, "applied": False}
+          threshold: float = APPLY_THRESHOLD, max_apply: float = MAX_APPLY,
+          min_gain: float = MIN_GAIN) -> dict:
+    """Measure and correct the offset in place. Returns a summary dict.
+
+    Deliberately conservative: a chroma match over a whole piece has plenty of
+    near-ties, and shifting a MIDI by seconds because of a spurious peak would
+    wreck a result that was already fine. So only shift when the offset is big
+    enough to matter, small enough to be plausible, AND the fit actually improves
+    on leaving it alone. Anything else is reported and left untouched.
+    """
+    lag, sim, zero = estimate_lag(src_wav, midi_path, max_lag=max_lag)
+    info = {"lag_seconds": lag, "similarity": sim, "similarity_at_zero": zero,
+            "applied": False, "reason": ""}
+
     if abs(lag) < threshold:
-        if log:
-            log("finalizing",
-                f"alignment: {lag * 1000:+.0f} ms (sim {sim:.3f}) — tidak perlu digeser")
-        return info
-    tmp = midi_path.with_suffix(".shifted.mid")
-    apply_shift(midi_path, tmp, -lag)
-    tmp.replace(midi_path)
-    info["applied"] = True
+        info["reason"] = "sudah sejajar"
+    elif abs(lag) > max_apply:
+        info["reason"] = f"lag {lag:.2f}s terlalu besar untuk dipercaya"
+    elif sim < zero + min_gain:
+        info["reason"] = f"tidak cukup yakin (sim {sim:.3f} vs {zero:.3f} di 0)"
+    else:
+        tmp = midi_path.with_suffix(".shifted.mid")
+        apply_shift(midi_path, tmp, -lag)
+        tmp.replace(midi_path)
+        info["applied"] = True
+        info["reason"] = "dikoreksi"
+
     if log:
-        log("finalizing",
-            f"alignment: MIDI bergeser {lag * 1000:+.0f} ms (sim {sim:.3f}) → dikoreksi")
+        detail = (f"alignment: {lag * 1000:+.0f} ms (sim {sim:.3f}, "
+                  f"0-lag {zero:.3f}) — {info['reason']}")
+        log("finalizing", detail)
     return info
 
 
 def main() -> int:
     src, mdir = Path(sys.argv[1]), Path(sys.argv[2])
-    lag, sim = estimate_lag(src, mdir)
-    print(f"lag {lag * 1000:+.0f} ms   sim {sim:.3f}")
+    lag, sim, zero = estimate_lag(src, mdir)
+    print(f"lag {lag * 1000:+.0f} ms   sim {sim:.3f}   sim@0 {zero:.3f}")
     if len(sys.argv) > 3 and sys.argv[3] == "--apply":
         apply_shift(mdir, mdir, -lag)
         print("applied")

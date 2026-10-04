@@ -320,6 +320,25 @@ dropdown kunci (28 pilihan) dan input ♪ = BPM. Kalau kunci hasil deteksi ambig
 (selisih skor antar-kandidat < 0.01), UI memberi peringatan eksplisit — itu terjadi
 pada repertoar kromatik seperti Op. 39 No. 6, di mana E major dan A minor nyaris seri.
 
+### Cache header (penting saat deploy ulang)
+
+Next.js menyajikan halaman yang di-prerender dengan `Cache-Control: s-maxage=31536000`
+— **setahun** di shared cache — sementara chunk JS-nya ber-hash dan berganti setiap
+build. Browser/proxy yang memegang HTML setahun itu lalu meminta nama chunk yang sudah
+tidak ada, hidrasi mati, dan aplikasi tampil berantakan beberapa detik setelah deploy
+yang tadinya kelihatan baik.
+
+Karena itu `next.config.ts` memisahkan kebijakannya:
+
+| path | Cache-Control |
+|---|---|
+| `/`, `/share/:slug`, halaman lain | `no-cache, no-store, must-revalidate` |
+| `/_next/static/**` | `public, max-age=31536000, immutable` (benar — nama file ber-hash) |
+
+Verifikasi setelah build: `curl -sD - -o /dev/null http://127.0.0.1:8891/ | grep -i cache-control`
+harus menunjukkan `no-store`. Kalau browser sudah terlanjur memegang HTML lama, **hard
+refresh** (Ctrl/Cmd+Shift+R) sekali sudah cukup.
+
 ## Uji
 
 ```bash
