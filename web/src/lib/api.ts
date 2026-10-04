@@ -31,6 +31,9 @@ export interface Job {
   midi_path?: string | null;
   audio_path?: string | null;
   stems: Record<string, string>;
+  /** sustain-pedal detection result from the backend */
+  pedal?: PedalInfo;
+  accuracy?: string;
   note_count: number;
   duration: number;
   error: string;
@@ -44,9 +47,26 @@ export interface JobOptions {
   stem_mode?: "vocals" | "full";
   target?: "melody" | "vocals" | "instrumental" | "mix";
   engine?: "basic-pitch" | "librosa-pyin";
+  /** accuracy preset — thresholds below only apply when set explicitly */
+  accuracy?: "fast" | "balanced" | "precise";
   onset_threshold?: number;
   frame_threshold?: number;
   min_note_length?: number;
+  min_frequency?: number;
+  max_frequency?: number;
+  suppress_percussion?: boolean;
+  min_velocity?: number;
+  merge_gap?: number;
+  quantize?: number;
+}
+
+export interface PedalInfo {
+  segments?: number;
+  pedalled_seconds?: number;
+  ratio?: number;
+  median_gap_ratio?: number;
+  gaps?: number;
+  skipped?: boolean;
 }
 
 export interface Health {
@@ -65,6 +85,8 @@ export interface Health {
     workers: number;
     yt_max_seconds: number;
     max_upload_mb: number;
+    accuracy_presets?: string[];
+    default_accuracy?: string;
   };
   stats: {
     total: number;

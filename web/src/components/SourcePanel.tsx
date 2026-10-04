@@ -22,6 +22,12 @@ interface Props {
 
 const ACCEPT = ".mp3,.wav,.ogg,.flac,.m4a,.aac,.opus,.webm,audio/*";
 
+const ACCURACY: { id: string; label: string; hint: string }[] = [
+  { id: "fast", label: "Cepat", hint: "not panjang & jelas, paling sedikit noise" },
+  { id: "balanced", label: "Seimbang", hint: "rekomendasi — detail vs noise" },
+  { id: "precise", label: "Presisi", hint: "not halus & pelan ikut terdeteksi" },
+];
+
 export default function SourcePanel({
   health,
   busy,
@@ -39,7 +45,9 @@ export default function SourcePanel({
   const [stemMode, setStemMode] = useState<"vocals" | "full">("vocals");
   const [target, setTarget] = useState<"melody" | "instrumental" | "mix">("melody");
   const [engine, setEngine] = useState<"" | "basic-pitch" | "librosa-pyin">("");
+  const [accuracy, setAccuracy] = useState<"fast" | "balanced" | "precise">("balanced");
   const [advanced, setAdvanced] = useState(false);
+  const [customThresholds, setCustomThresholds] = useState(false);
   const [onset, setOnset] = useState(0.5);
   const [frame, setFrame] = useState(0.3);
   const [minLen, setMinLen] = useState(0.06);
@@ -50,11 +58,13 @@ export default function SourcePanel({
       stem_mode: stems ? stemMode : undefined,
       target: stems ? target : undefined,
       engine: engine || undefined,
-      onset_threshold: onset,
-      frame_threshold: frame,
-      min_note_length: minLen,
+      accuracy,
+      // only send raw numbers once the user overrides the preset by hand
+      onset_threshold: customThresholds ? onset : undefined,
+      frame_threshold: customThresholds ? frame : undefined,
+      min_note_length: customThresholds ? minLen : undefined,
     }),
-    [stems, stemMode, target, engine, onset, frame, minLen]
+    [stems, stemMode, target, engine, accuracy, customThresholds, onset, frame, minLen]
   );
 
   const pick = (f: File | null) => {
@@ -162,6 +172,34 @@ export default function SourcePanel({
 
       {/* options */}
       <div className="mt-4 space-y-3">
+        <div className="space-y-1.5">
+          <span className="text-[11px] uppercase tracking-wider text-slate-500">
+            Ketepatan transkripsi
+          </span>
+          <div className="grid grid-cols-3 gap-1 rounded-lg bg-black/40 p-1">
+            {ACCURACY.map((a) => (
+              <button
+                key={a.id}
+                type="button"
+                onClick={() => {
+                  setAccuracy(a.id as typeof accuracy);
+                  setCustomThresholds(false);
+                }}
+                className={`rounded-md px-2 py-2 text-xs font-medium transition ${
+                  accuracy === a.id
+                    ? "bg-cyan-500/20 text-cyan-100 ring-1 ring-cyan-400/40"
+                    : "text-slate-400 hover:text-slate-200"
+                }`}
+              >
+                {a.label}
+              </button>
+            ))}
+          </div>
+          <p className="text-[11px] text-slate-500">
+            {ACCURACY.find((a) => a.id === accuracy)?.hint}
+          </p>
+        </div>
+
         <label className="flex items-start gap-3 rounded-lg bg-black/20 p-3 ring-1 ring-white/10">
           <input
             type="checkbox"
@@ -253,11 +291,19 @@ export default function SourcePanel({
                   max={max}
                   step={0.01}
                   value={val}
-                  onChange={(e) => setter(Number(e.target.value))}
+                  onChange={(e) => {
+                    setCustomThresholds(true);
+                    setter(Number(e.target.value));
+                  }}
                   className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-white/10 accent-cyan-400"
                 />
               </label>
             ))}
+            {customThresholds && (
+              <p className="text-[11px] text-pink-200/80 sm:col-span-2">
+                Threshold manual aktif — mengalahkan preset ketepatan.
+              </p>
+            )}
           </div>
         )}
       </div>

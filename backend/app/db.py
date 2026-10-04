@@ -56,6 +56,12 @@ CREATE INDEX IF NOT EXISTS idx_events_job ON events(job_id);
 CREATE INDEX IF NOT EXISTS idx_jobs_created ON jobs(created_at DESC);
 """
 
+# Additive migrations — never drop or rewrite existing rows.
+MIGRATIONS: list[tuple[str, str, str]] = [
+    ("jobs", "pedal", "ALTER TABLE jobs ADD COLUMN pedal TEXT NOT NULL DEFAULT '{}'"),
+    ("jobs", "accuracy", "ALTER TABLE jobs ADD COLUMN accuracy TEXT NOT NULL DEFAULT ''"),
+]
+
 
 def _conn() -> sqlite3.Connection:
     c = sqlite3.connect(config.DB_PATH, timeout=30, check_same_thread=False)
@@ -68,6 +74,10 @@ def _conn() -> sqlite3.Connection:
 def init() -> None:
     with _lock, _conn() as c:
         c.executescript(SCHEMA)
+        for table, column, ddl in MIGRATIONS:
+            existing = {r["name"] for r in c.execute(f"PRAGMA table_info({table})")}
+            if column not in existing:
+                c.execute(ddl)
 
 
 def new_id(prefix: str = "job") -> str:
@@ -101,6 +111,8 @@ def update_job(job_id: str, **fields: Any) -> None:
         fields["options"] = json.dumps(fields["options"])
     if "stems" in fields and isinstance(fields["stems"], dict):
         fields["stems"] = json.dumps(fields["stems"])
+    if "pedal" in fields and isinstance(fields["pedal"], dict):
+        fields["pedal"] = json.dumps(fields["pedal"])
     fields["updated_at"] = time.time()
     cols = ", ".join(f"{k} = ?" for k in fields)
     with _lock, _conn() as c:
@@ -119,6 +131,11 @@ def _row_to_job(row: sqlite3.Row, with_events: bool = False) -> dict[str, Any]:
     d = dict(row)
     d["options"] = json.loads(d.get("options") or "{}")
     d["stems"] = json.loads(d.get("stems") or "{}")
+    if "pedal" in d:
+        try:
+            d["pedal"] = json.loads(d.get("pedal") or "{}")
+        except (TypeError, ValueError):
+            d["pedal"] = {}
     if with_events:
         with _lock, _conn() as c:
             ev = c.execute(

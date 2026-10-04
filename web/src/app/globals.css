@@ -101,3 +101,45 @@ select option {
   display: block;
   max-width: none;
 }
+
+/* ------------------------------------------------------------------ mobile */
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  overscroll-behavior-y: none;
+}
+
+button,
+a,
+label,
+input {
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* the studio must never scroll sideways on a phone */
+@media (max-width: 1023px) {
+  html,
+  body {
+    overflow-x: hidden;
+  }
+}
+
+/* respect the notch / home indicator on the bottom tab bar */
+@supports (padding: env(safe-area-inset-bottom)) {
+  nav[aria-label],
+  .mm-safe-bottom {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

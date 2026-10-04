@@ -22,18 +22,20 @@ Audio / YouTube ──> yt-dlp + ffmpeg ──> [Demucs stem AI] ──> basic-p
 |---|---|---|
 | Upload lokal (MP3/WAV/OGG/FLAC/M4A/Opus/WebM) | ✅ | drag & drop, maks 60 MB |
 | Input URL YouTube | ✅ | yt-dlp, batas durasi 15 menit |
-| AI Audio → MIDI (polifonik) | ✅ | **basic-pitch** (ONNX, CPU) |
+| AI Audio → MIDI (polifonik) | ✅ | **basic-pitch** (ONNX, CPU), 3 preset ketepatan |
+| Kualitas hasil | ✅ | pra-proses audio (normalisasi + band-limit + buang perkusi), gabung fragmen not, buang noise |
 | Fallback transkripsi melodi | ✅ | **librosa pyin** (monofonik) bila basic-pitch gagal |
 | AI Stem Separation | ✅ | **Demucs** 2-stem (vokal/instrumental) atau 4-stem |
 | Interactive Piano Simulator (88 tuts) | ✅ | tuts menyala mengikuti not yang berbunyi |
 | Synthesia-style falling notes | ✅ | canvas, warna per pitch, auto-follow, click-to-seek |
 | Play / Pause / Stop / Seek / Volume | ✅ | transport dengan range-request audio + level meter |
-| **Sustain pedal** | ✅ | not tetap berbunyi setelah tuts lepas, seperti pedal ditahan |
+| **Sustain pedal otomatis** | ✅ | pedal dideteksi dari rekaman (CC64), mode Auto/On/Off |
 | Tempo & Pitch shifting | ✅ | 25%–200% tanpa ubah pitch; transpose −12…+12 semitone |
 | Sheet Music Generator | ✅ | **VexFlow** grand staff treble+bass, 4/4 |
 | Multi-Instrument Synth | ✅ | 4 instrumen **berbasis rekaman asli** (sample) + 2 sintetis |
-| Export | ✅ | `.mid` asli, `.mid` hasil transpose/tempo (di-render ulang di server), `.pdf` partitur |
+| Export | ✅ | `.mid` asli (sudah membawa pedal), `.mid` transpose/tempo, `.pdf` partitur |
 | Share link | ✅ | slug unik, halaman `/share/<slug>` read-only + penghitung kunjungan |
+| **Layout mobile** | ✅ | bottom tab bar, kartu, piano roll dipendekkan, tanpa scroll horizontal |
 
 ## Arsitektur
 
@@ -143,7 +145,8 @@ Backend membaca env var berikut (default di `backend/app/config.py`):
 | `MIDIMAGIC_WORKERS` | `1` | worker paralel (naikkan hanya kalau RAM cukup) |
 | `MIDIMAGIC_YT_MAX_SECONDS` | `900` | batas durasi YouTube |
 | `MIDIMAGIC_YT_JS_RUNTIME` | `node` | JS runtime untuk ekstraksi YouTube (kosongkan untuk mematikan) |
-| `MIDIMAGIC_MAX_UPLOAD_MB` | `60` | batas ukuran upload |
+| `MIDIMAGIC_MAX_UPLOAD_MB` | `60` | batas upload |
+| `MIDIMAGIC_ANALYSIS_SR` | `22050` | sample rate analisis (transkripsi + deteksi pedal) |
 
 Frontend: `NEXT_PUBLIC_API_BASE` di `web/.env.local` — **di-bake saat build**, jadi ubah lalu
 `npm run build` ulang.
@@ -165,7 +168,68 @@ Frontend: `NEXT_PUBLIC_API_BASE` di `web/.env.local` — **di-bake saat build**,
 
 Opsi job: `stems` (bool), `stem_mode` (`vocals`\|`full`), `target`
 (`melody`\|`instrumental`\|`mix`), `engine` (`basic-pitch`\|`librosa-pyin`),
-`onset_threshold`, `frame_threshold`, `min_note_length`.
+`accuracy` (`fast`\|`balanced`\|`precise`), `onset_threshold`, `frame_threshold`,
+`min_note_length`, `min_frequency`, `max_frequency`, `suppress_percussion`,
+`min_velocity`, `merge_gap`, `quantize`.
+
+`accuracy` memilih satu set threshold; mengirim `onset_threshold` / `frame_threshold` /
+`min_note_length` secara eksplisit akan menimpainya.
+
+## Cara kerja kualitas hasil
+
+### Pra-proses audio
+
+Upload dan hasil unduhan YouTube sangat berbeda levelnya, dan membawa rumble di bawah
+jangkauan piano. Keduanya membuat model "berhalusinasi" not. Jadi setiap input dinormalisasi
+puncaknya, di-band-limit ke rentang piano, dan perkusinya dibuang (harmonic/percussive
+separation) sebelum masuk model. Hit drum adalah sumber not palsu nomor satu; kalau pakai
+Demucs stem, langkah ini dilewati karena drumnya sudah hilang.
+
+### Preset ketepatan
+
+| Preset | Onset | Frame | Min panjang not | Rentang frekuensi |
+|---|---|---|---|---|
+| `fast` | 0.60 | 0.35 | 90 ms | 55–3520 Hz |
+| `balanced` (default) | 0.50 | 0.30 | 58 ms | 41–4186 Hz |
+| `precise` | 0.38 | 0.22 | 42 ms | 33–4978 Hz |
+
+Onset lebih rendah = lebih sensitif (not pelan ikut tertangkap, tapi lebih banyak sampah).
+
+### Pembersihan MIDI
+
+Model memecah satu not piano menjadi 2–3 event berdempetan — itu terdengar seperti stutter dan
+menggelembungkan jumlah not. Post-process **menggabungkan kembali** fragmen dengan pitch sama
+yang jaraknya < 55 ms, memangkas tumpang-tindih, dan membuang bintik ber-velocity rendah yang
+hampir pasti noise. Pada Canon in D (183 s): 1434 → **839 not** (380 fragmen digabung, 251 noise
+dibuang), dan hasilnya jauh lebih mirip aslinya.
+
+### Sustain pedal otomatis
+
+Pedal piano itu **terdengar**, bukan ditebak. Saat pedal ditahan, senar terus berbunyi melewati
+jeda antar-not alih-alih teredam. Jadi untuk setiap jeda diukur RMS jeda terhadap RMS not
+sebelumnya:
+
+- jeda yang tetap berbunyi → pedal ditahan
+- jeda yang jatuh ke senyap → pedal dilepas
+
+Jeda berbunyi berurutan dirangkai jadi satu region pedal — persis seperti pemain menahan pedal
+sepanjang frasa. Region yang sangat panjang (> 8 s) dipotong dengan lepas-singkat 120 ms, seperti
+pemain menekan ulang pedal.
+
+Hasilnya ditulis ke MIDI sebagai **CC64**, jadi pedalnya ikut di dalam file: pemutar membacanya,
+dan siapa pun yang mengunduh atau membuka `.mid` hasil share juga mendapatkannya.
+
+Hasil pengukuran pada dua rekaman piano nyata:
+
+| Rekaman | Jeda panjang turun ke | Coverage pedal |
+|---|---|---|
+| Canon in D (Jacob's Piano) — pedal ditahan terus | −4 dB | 99% |
+| Rachmaninoff Op. 39 No. 6 — staccato/marcato | −33 dB (benar-benar teredam) | 88% |
+
+Perbedaan −4 dB vs −33 dB itulah yang dipakai algoritma untuk memutuskan.
+
+Mode pedal di UI: **Auto** (memakai hasil deteksi), **On** (paksa tahan), **Off** (paksa lepas).
+Piano roll menampilkan lampu pedal kecil di atas keyboard saat pedal sedang aktif.
 
 ## Uji
 
@@ -177,15 +241,31 @@ cd backend && .venv/bin/python tests/smoke_api.py data/test/melody_stereo.wav --
 Skrip membuat file WAV sintetis sendiri (`data/test/`), menjalankan job sampai selesai, lalu
 memverifikasi MIDI, preview audio, range request, share, dan export transpose.
 
+Alat diagnosa pipeline (memakai audio dari job yang sudah ada):
+
+```bash
+cd backend
+.venv/bin/python tests/pipeline_check.py data/jobs/<id>/source.wav --preset balanced
+.venv/bin/python tests/pedal_probe.py  /tmp/mm_check/prepared.wav /tmp/mm_check/raw.mid
+.venv/bin/python tests/gap_shape.py    /tmp/mm_check/prepared.wav /tmp/mm_check/raw.mid
+```
+
+`gap_shape.py` mencetak bentuk decay di dalam setiap jeda antar-not — inilah data yang
+menentukan ambang `RINGING_RATIO`: piano yang dipedal turun hanya beberapa dB, yang teredam
+jatuh puluhan dB.
+
 ## Performa (mesin 4 vCPU, tanpa GPU)
 
-| Tahap | 4 detik audio | Perkiraan lagu 3 menit |
+| Tahap | 4 detik audio | Lagu 3 menit |
 |---|---|---|
-| Transkripsi basic-pitch (ONNX) | ~1,5 s | ~1–2 menit |
+| Pra-proses (normalisasi + band-limit + HPSS) | ~1 s | **~10–13 s** |
+| Transkripsi basic-pitch (ONNX) | ~1,5 s | ~4–6 s |
+| Bersihkan MIDI | <0,1 s | ~0,1 s |
+| Deteksi pedal | <0,1 s | ~0,3 s |
 | Stem separation Demucs | ~30 s | **~20–30 menit** |
 
-Demucs memang berat di CPU. Kalau hanya butuh MIDI cepat, matikan stem separation — akurasi
-sedikit turun tapi hasilnya tetap polifonik.
+Demucs memang berat di CPU. Kalau hanya butuh MIDI cepat, matikan stem separation — pra-proses
+sudah membuang perkusi, jadi akurasinya masih bagus.
 
 ## Struktur
 
@@ -200,17 +280,32 @@ midimagic/
 │   │   └── pipeline/
 │   │       ├── fetch.py       # upload / yt-dlp → WAV
 │   │       ├── stems.py       # Demucs
-│   │       ├── transcribe.py  # basic-pitch / librosa-pyin → MIDI
-│   │       └── post.py        # pembersihan + transpose/tempo
-│   ├── tests/smoke_api.py
+│   │       ├── transcribe.py  # pra-proses + basic-pitch / librosa-pyin → MIDI
+│   │       ├── sustain.py     # deteksi pedal dari audio → CC64 di MIDI
+│   │       └── post.py        # gabung fragmen, buang noise, transpose/tempo
+│   ├── tests/
+│   │   ├── smoke_api.py       # uji end-to-end lewat HTTP
+│   │   ├── pipeline_check.py  # jalankan pipeline pada audio nyata, cetak waktu
+│   │   ├── gap_shape.py       # bentuk decay di jeda antar-not (tuning pedal)
+│   │   └── pedal_probe.py     # sebaran rasio energi jeda
 │   ├── data/                  # sqlite, artefak job, share
 │   └── run.sh
 ├── web/
 │   ├── src/app/{page,layout,globals.css,share/[slug]/page.tsx}
-│   ├── src/components/        # Studio, PianoRoll, Transport, SheetMusic, dll
-│   └── src/lib/               # api, audio (Tone), midi, score (VexFlow), keys, instruments
+│   ├── src/components/        # Studio, PianoRoll, Transport, BottomTabs (mobile), dll
+│   ├── src/lib/               # api, audio (Tone), midi (+CC64), score (VexFlow), keys,
+│   │                          # instruments, useMediaQuery
+│   └── public/audio/          # sample instrumen (Salamander + MusyngKite)
 └── deploy/                    # unit systemd
 ```
+
+### Mobile
+
+Breakpoint tunggal di 1023 px (`useMediaQuery.ts`). Di bawah itu Studio berubah jadi satu
+kolom + **bottom tab bar** (Putar · Sumber · Suara · Partitur · Pustaka), piano roll
+dipendekkan (250 px + keyboard 74 px), dan `overflow-x` dikunci supaya tidak ada scroll
+horizontal. Posisi tab dipertahankan saat memuat hasil baru (otomatis pindah ke **Putar**).
+Halaman share memakai breakpoint yang sama.
 
 ## Kredit
 

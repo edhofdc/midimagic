@@ -1,10 +1,11 @@
 "use client";
 
 import { Midi } from "@tonejs/midi";
-import type { NoteEvent } from "./audio";
+import type { NoteEvent, PedalEvent } from "./audio";
 
 export interface LoadedMidi {
   notes: NoteEvent[];
+  pedal: PedalEvent[];
   duration: number;
   tempo: number;
   trackCount: number;
@@ -36,11 +37,44 @@ export function parseMidiBuffer(buf: ArrayBuffer, name = ""): LoadedMidi {
   const tempo = midi.header.tempos[0]?.bpm ?? 120;
   return {
     notes,
+    pedal: readPedal(midi),
     duration: midi.duration || Math.max(0, ...notes.map((n) => n.end), 0),
     tempo,
     trackCount: midi.tracks.length,
     name: midi.name || name,
   };
+}
+
+/**
+ * Read the sustain-pedal lane (CC64) into plain intervals.
+ *
+ * The backend infers these from the recording, so a transcription carries the
+ * pedal of the performance it came from — no manual toggling needed.
+ */
+export function readPedal(midi: Midi): PedalEvent[] {
+  const raw: { time: number; down: boolean }[] = [];
+  for (const track of midi.tracks) {
+    const lane = track.controlChanges?.[64];
+    if (!lane) continue;
+    for (const cc of lane) {
+      raw.push({ time: cc.time, down: cc.value >= 0.5 });
+    }
+  }
+  if (raw.length === 0) return [];
+  raw.sort((a, b) => a.time - b.time);
+
+  const out: PedalEvent[] = [];
+  let start: number | null = null;
+  for (const e of raw) {
+    if (e.down) {
+      if (start === null) start = e.time;
+    } else if (start !== null) {
+      if (e.time - start >= 0.05) out.push({ start, end: e.time });
+      start = null;
+    }
+  }
+  if (start !== null) out.push({ start, end: midi.duration });
+  return out;
 }
 
 /** Trim notes outside the 88-key range and optionally thin out very dense chords. */

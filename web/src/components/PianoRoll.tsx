@@ -10,9 +10,10 @@ interface Props {
   zoom: number; // white-key width in px
   visibleSeconds: number;
   onSeek: (sec: number) => void;
+  /** roll / keyboard pixel heights — phones get a shorter, wider-feeling view */
+  rollHeight?: number;
+  keyboardHeight?: number;
 }
-
-const KEYBOARD_H = 96;
 
 export default function PianoRoll({
   player,
@@ -20,13 +21,16 @@ export default function PianoRoll({
   zoom,
   visibleSeconds,
   onSeek,
+  rollHeight = 380,
+  keyboardHeight = 96,
 }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const followRef = useRef(true);
 
   const width = WHITE_COUNT * zoom;
-  const rollH = 380;
+  const rollH = rollHeight;
+  const KEYBOARD_H = keyboardHeight;
   const totalH = rollH + KEYBOARD_H;
 
   const layout = useMemo(() => layoutKeys(width), [width]);
@@ -158,6 +162,15 @@ export default function PianoRoll({
       ctx.moveTo(0, kbY);
       ctx.lineTo(width, kbY);
       ctx.stroke();
+
+      // damper pedal lamp — lit while the sustain is engaged
+      if (state.pedal) {
+        ctx.fillStyle = "rgba(255,0,200,0.85)";
+        ctx.shadowColor = "rgba(255,0,200,0.9)";
+        ctx.shadowBlur = 10;
+        ctx.fillRect(0, rollH - 3, width, 3);
+        ctx.shadowBlur = 0;
+      }
     },
     [layout, notes, rollH, totalH, visibleSeconds, width]
   );
@@ -169,6 +182,7 @@ export default function PianoRoll({
       duration: player.durationValue,
       playing: false,
       activeNotes: new Set(),
+      pedal: false,
     });
     return off;
   }, [player, draw]);

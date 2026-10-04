@@ -2,22 +2,35 @@
 
 import { useEffect, useRef, useState } from "react";
 import { Pause, Play, Square, Volume2, VolumeX, Waves } from "lucide-react";
-import type { MidiPlayer } from "@/lib/audio";
+import type { MidiPlayer, PedalMode } from "@/lib/audio";
 import { formatTime } from "@/lib/midi";
 
 interface Props {
   player: MidiPlayer;
   duration: number;
   disabled?: boolean;
+  /** whether the loaded MIDI carried a CC64 lane (i.e. Auto means something) */
+  hasPedal?: boolean;
 }
 
-export default function Transport({ player, duration, disabled }: Props) {
+const PEDAL_LABEL: Record<PedalMode, string> = {
+  auto: "Auto",
+  on: "On",
+  off: "Off",
+};
+
+export default function Transport({ player, duration, disabled, hasPedal }: Props) {
   const seekRef = useRef<HTMLInputElement>(null);
   const timeRef = useRef<HTMLSpanElement>(null);
+  const pedalRef = useRef<HTMLSpanElement>(null);
   const [playing, setPlaying] = useState(false);
   const [volume, setVolume] = useState(0.75);
   const [muted, setMuted] = useState(false);
-  const [sustain, setSustain] = useState(false);
+  const [pedalMode, setPedalMode] = useState<PedalMode>("auto");
+
+  useEffect(() => {
+    setPedalMode(player.pedalMode);
+  }, [player]);
 
   useEffect(() => {
     let lastSec = -1;
@@ -30,6 +43,10 @@ export default function Transport({ player, duration, disabled }: Props) {
       if (sec !== lastSec && timeRef.current) {
         lastSec = sec;
         timeRef.current.textContent = formatTime(s.position);
+      }
+      // live damper state — the pedal is driven by the recording, not by a click
+      if (pedalRef.current) {
+        pedalRef.current.dataset.down = s.pedal ? "1" : "0";
       }
     });
   }, [player]);
@@ -44,10 +61,9 @@ export default function Transport({ player, duration, disabled }: Props) {
     player.setVolume(mute ? 0 : v);
   };
 
-  const togglePedal = () => {
-    const next = !sustain;
-    setSustain(next);
-    player.setSustain(next);
+  const choosePedal = (mode: PedalMode) => {
+    setPedalMode(mode);
+    player.setPedalMode(mode);
   };
 
   // output level meter — proof the graph is actually producing signal
@@ -65,13 +81,13 @@ export default function Transport({ player, duration, disabled }: Props) {
   }, [player]);
 
   return (
-    <div className="flex flex-wrap items-center gap-3 rounded-xl border border-cyan-500/20 bg-[#0a0c16]/80 px-3 py-2.5 backdrop-blur">
+    <div className="flex flex-wrap items-center gap-2 rounded-xl border border-cyan-500/20 bg-[#0a0c16]/80 px-2.5 py-2.5 backdrop-blur sm:gap-3 sm:px-3">
       <div className="flex items-center gap-1.5">
         <button
           type="button"
           onClick={toggle}
           disabled={disabled}
-          className="grid h-10 w-10 place-items-center rounded-lg bg-cyan-500/15 text-cyan-200 ring-1 ring-cyan-400/40 transition hover:bg-cyan-400/25 disabled:opacity-40"
+          className="grid h-11 w-11 place-items-center rounded-lg bg-cyan-500/15 text-cyan-200 ring-1 ring-cyan-400/40 transition active:scale-95 hover:bg-cyan-400/25 disabled:opacity-40 sm:h-10 sm:w-10"
           title={playing ? "Pause" : "Play"}
         >
           {playing ? <Pause size={18} /> : <Play size={18} />}
@@ -80,30 +96,53 @@ export default function Transport({ player, duration, disabled }: Props) {
           type="button"
           onClick={() => player.stop()}
           disabled={disabled}
-          className="grid h-10 w-10 place-items-center rounded-lg bg-white/5 text-slate-300 ring-1 ring-white/10 transition hover:bg-white/10 disabled:opacity-40"
+          className="grid h-11 w-11 place-items-center rounded-lg bg-white/5 text-slate-300 ring-1 ring-white/10 transition active:scale-95 hover:bg-white/10 disabled:opacity-40 sm:h-10 sm:w-10"
           title="Stop"
         >
           <Square size={16} />
         </button>
-        <button
-          type="button"
-          onClick={togglePedal}
-          disabled={disabled}
-          title="Sustain pedal — not tetap berbunyi setelah tuts dilepas"
-          className={`flex h-10 items-center gap-1.5 rounded-lg px-3 text-[11px] font-semibold uppercase tracking-wider ring-1 transition disabled:opacity-40 ${
-            sustain
-              ? "bg-pink-500/25 text-pink-100 ring-pink-400/50 shadow-[0_0_18px_-4px_rgba(255,0,200,0.8)]"
-              : "bg-white/5 text-slate-400 ring-white/10 hover:bg-white/10"
-          }`}
+
+        {/* pedal: Auto replays the CC64 lane inferred from the recording */}
+        <div
+          className="flex h-11 items-center overflow-hidden rounded-lg ring-1 ring-white/10 sm:h-10"
+          title={
+            hasPedal
+              ? "Sustain pedal — Auto memakai pedal hasil deteksi dari rekaman"
+              : "Sustain pedal — rekaman ini tidak punya sustain terdeteksi, pakai Auto/On/Off"
+          }
         >
-          <Waves size={14} />
-          Sustain
-        </button>
+          <span className="grid h-full place-items-center bg-white/5 px-2 text-slate-400">
+            <Waves size={14} />
+          </span>
+          {(Object.keys(PEDAL_LABEL) as PedalMode[]).map((mode) => {
+            const active = pedalMode === mode;
+            return (
+              <button
+                key={mode}
+                type="button"
+                onClick={() => choosePedal(mode)}
+                disabled={disabled}
+                className={`h-full px-2.5 text-[11px] font-semibold uppercase tracking-wider transition disabled:opacity-40 ${
+                  active
+                    ? "bg-pink-500/25 text-pink-100"
+                    : "text-slate-400 hover:bg-white/10 hover:text-slate-200"
+                }`}
+              >
+                {PEDAL_LABEL[mode]}
+              </button>
+            );
+          })}
+          <span
+            ref={pedalRef}
+            data-down="0"
+            className="h-full w-1.5 bg-black/40 data-[down=0]:bg-black/40 data-[down=1]:bg-pink-400 data-[down=1]:shadow-[0_0_12px_2px_rgba(255,0,200,0.9)]"
+          />
+        </div>
       </div>
 
       <span
         ref={timeRef}
-        className="w-12 shrink-0 font-mono text-xs text-cyan-200/90 tabular-nums"
+        className="w-11 shrink-0 font-mono text-xs text-cyan-200/90 tabular-nums sm:w-12"
       >
         0:00
       </span>
@@ -117,14 +156,14 @@ export default function Transport({ player, duration, disabled }: Props) {
         defaultValue={0}
         onChange={(e) => player.seek(Number(e.target.value))}
         disabled={disabled}
-        className="h-1.5 min-w-[140px] flex-1 cursor-pointer appearance-none rounded-full bg-white/10 accent-cyan-400 disabled:opacity-40"
+        className="order-last h-1.5 w-full min-w-0 flex-1 cursor-pointer appearance-none rounded-full bg-white/10 accent-cyan-400 disabled:opacity-40 sm:order-none sm:w-auto"
       />
 
-      <span className="w-12 shrink-0 font-mono text-xs text-slate-500 tabular-nums">
+      <span className="hidden w-12 shrink-0 font-mono text-xs text-slate-500 tabular-nums sm:block">
         {formatTime(duration)}
       </span>
 
-      <div className="flex items-center gap-1.5">
+      <div className="ml-auto flex items-center gap-1.5">
         <button
           type="button"
           onClick={() => {
@@ -132,7 +171,7 @@ export default function Transport({ player, duration, disabled }: Props) {
             setMuted(next);
             applyVolume(volume, next);
           }}
-          className="grid h-8 w-8 place-items-center rounded-md text-slate-400 hover:text-cyan-200"
+          className="grid h-9 w-9 place-items-center rounded-md text-slate-400 hover:text-cyan-200"
           title="Mute"
         >
           {muted || volume === 0 ? <VolumeX size={15} /> : <Volume2 size={15} />}
@@ -144,10 +183,10 @@ export default function Transport({ player, duration, disabled }: Props) {
           step={0.01}
           value={muted ? 0 : volume}
           onChange={(e) => applyVolume(Number(e.target.value))}
-          className="h-1.5 w-24 cursor-pointer appearance-none rounded-full bg-white/10 accent-pink-400"
+          className="h-1.5 w-20 cursor-pointer appearance-none rounded-full bg-white/10 accent-pink-400 sm:w-24"
         />
         <div
-          className="h-2 w-16 overflow-hidden rounded-full bg-black/50 ring-1 ring-white/10"
+          className="h-2 w-12 overflow-hidden rounded-full bg-black/50 ring-1 ring-white/10 sm:w-16"
           title="Level output"
         >
           <div

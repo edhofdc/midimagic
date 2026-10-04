@@ -3,10 +3,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AudioWaveform, HardDrive, Loader2, Sparkles, Zap } from "lucide-react";
 import { api, API_BASE, type Health, type Job, type JobOptions } from "@/lib/api";
-import type { InstrumentId, MidiPlayer, NoteEvent } from "@/lib/audio";
+import type { InstrumentId, MidiPlayer, NoteEvent, PedalEvent } from "@/lib/audio";
 import { INSTRUMENTS } from "@/lib/instruments";
 import { loadMidi, sanitizeNotes } from "@/lib/midi";
-import { renderScore } from "@/lib/score";
+import { useIsMobile } from "@/lib/useMediaQuery";
 import SourcePanel from "@/components/SourcePanel";
 import JobProgress from "@/components/JobProgress";
 import PianoRoll from "@/components/PianoRoll";
@@ -15,6 +15,7 @@ import TransformPanel from "@/components/TransformPanel";
 import SheetMusic from "@/components/SheetMusic";
 import SharePanel from "@/components/SharePanel";
 import Library from "@/components/Library";
+import BottomTabs, { type MobileTab } from "@/components/BottomTabs";
 
 export default function Studio() {
   const playerRef = useRef<MidiPlayer | null>(null);
@@ -23,6 +24,7 @@ export default function Studio() {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [job, setJob] = useState<Job | null>(null);
   const [notes, setNotes] = useState<NoteEvent[]>([]);
+  const [pedal, setPedal] = useState<PedalEvent[]>([]);
   const [bpm, setBpm] = useState(120);
   const [instrument, setInstrument] = useState<InstrumentId>("grand-piano");
   const [speed, setSpeed] = useState(1);
@@ -34,6 +36,8 @@ export default function Studio() {
   const [uploadPct, setUploadPct] = useState<number | null>(null);
   const [libBusy, setLibBusy] = useState(false);
   const [engineReady, setEngineReady] = useState(false);
+  const [tab, setTab] = useState<MobileTab>("play");
+  const isMobile = useIsMobile();
 
   /* ---------------------------------------------------------------- engine */
   useEffect(() => {
@@ -105,9 +109,13 @@ export default function Studio() {
         const parsed = await loadMidi(api.midiUrl(j.id));
         const clean = sanitizeNotes(parsed.notes);
         setNotes(clean);
+        setPedal(parsed.pedal);
         setBpm(parsed.tempo || 120);
-        playerRef.current?.load(clean, parsed.duration);
+        // the pedal inferred from the recording is replayed automatically
+        playerRef.current?.load(clean, parsed.duration, parsed.pedal);
         setError(null);
+        // picking a track means you want to hear it — jump to the player
+        setTab("play");
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
       }
@@ -144,7 +152,8 @@ export default function Studio() {
       const created = await api.getJob(job_id);
       setJob(created);
       setNotes([]);
-      playerRef.current?.load([], 0);
+      setPedal([]);
+      playerRef.current?.load([], 0, []);
       void refresh();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -162,7 +171,8 @@ export default function Studio() {
       const created = await api.getJob(job_id);
       setJob(created);
       setNotes([]);
-      playerRef.current?.load([], 0);
+      setPedal([]);
+      playerRef.current?.load([], 0, []);
       void refresh();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -177,7 +187,8 @@ export default function Studio() {
       if (job?.id === j.id) {
         setJob(null);
         setNotes([]);
-        playerRef.current?.load([], 0);
+        setPedal([]);
+        playerRef.current?.load([], 0, []);
       }
       void refresh();
     } catch {
@@ -187,6 +198,8 @@ export default function Studio() {
 
   const title = job?.title || job?.source_ref || "midimagic";
   const stats = health?.stats;
+  const duration = notes.length ? Math.max(...notes.map((n) => n.end)) : 0;
+  const running = !!job && job.status !== "done" && job.status !== "error";
 
   const pills = useMemo(
     () =>
@@ -201,6 +214,192 @@ export default function Studio() {
     [health]
   );
 
+  /* ------------------------------------------------------------- fragments */
+  const header = (
+    <header className="mb-4 flex flex-wrap items-center justify-between gap-3">
+      <div className="flex items-center gap-3">
+        <span className="grid h-10 w-10 place-items-center rounded-xl bg-gradient-to-br from-cyan-400 to-pink-500 text-black shadow-[0_0_28px_-6px_rgba(0,240,255,0.9)]">
+          <AudioWaveform size={20} />
+        </span>
+        <div className="min-w-0">
+          <h1 className="text-lg font-semibold tracking-tight text-white">
+            Midi<span className="text-cyan-300">Magic</span>
+          </h1>
+          <p className="truncate text-[11px] text-slate-500">
+            {isMobile ? truncate(title, 42) : "Audio · YouTube → MIDI → Piano Visualizer"}
+          </p>
+        </div>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-1.5">
+        {pills.map((p) => (
+          <span
+            key={p.label}
+            title={`${p.label}: ${p.value}`}
+            className={`flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[10px] ring-1 ${
+              p.ok
+                ? "bg-emerald-500/10 text-emerald-200 ring-emerald-400/25"
+                : "bg-pink-500/10 text-pink-200 ring-pink-400/25"
+            }`}
+          >
+            <span
+              className={`h-1.5 w-1.5 rounded-full ${p.ok ? "bg-emerald-400" : "bg-pink-400"}`}
+            />
+            <span className={isMobile ? "hidden" : ""}>{p.label}</span>
+          </span>
+        ))}
+      </div>
+    </header>
+  );
+
+  const sourceGroup = (
+    <>
+      <SourcePanel
+        health={health}
+        busy={busy}
+        error={error}
+        onSubmitFile={submitFile}
+        onSubmitYoutube={submitYoutube}
+      />
+      <JobProgress job={job} uploadPct={uploadPct} />
+    </>
+  );
+
+  const libraryGroup = (
+    <>
+      <Library
+        jobs={jobs}
+        activeId={job?.id ?? null}
+        onSelect={loadResult}
+        onDelete={removeJob}
+        onRefresh={() => void refresh()}
+        loading={libBusy}
+      />
+      {stats && (
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-2">
+          {[
+            ["Konversi", stats.done],
+            ["Aktif", stats.active],
+            ["Total not", stats.notes],
+            ["Share", stats.shares],
+          ].map(([label, value]) => (
+            <div
+              key={String(label)}
+              className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2"
+            >
+              <p className="text-[10px] uppercase tracking-wider text-slate-500">{label}</p>
+              <p className="font-mono text-sm text-cyan-200">{value}</p>
+            </div>
+          ))}
+        </div>
+      )}
+    </>
+  );
+
+  const playerGroup = (
+    <>
+      {player ? (
+        <div className="relative">
+          <PianoRoll
+            player={player}
+            notes={notes}
+            zoom={zoom}
+            visibleSeconds={visibleSeconds}
+            onSeek={(s) => player.seek(s)}
+            rollHeight={isMobile ? 250 : 380}
+            keyboardHeight={isMobile ? 74 : 96}
+          />
+          {!engineReady && (
+            <div className="pointer-events-none absolute inset-0 grid place-items-center rounded-xl bg-black/60 backdrop-blur-sm">
+              <span className="flex items-center gap-2 rounded-full bg-cyan-500/15 px-3 py-1.5 text-xs text-cyan-100 ring-1 ring-cyan-400/30">
+                <Loader2 size={13} className="animate-spin" />
+                memuat sample {INSTRUMENTS.find((i) => i.id === instrument)?.label}…
+              </span>
+            </div>
+          )}
+        </div>
+      ) : (
+        <div
+          className="grid place-items-center rounded-xl border border-cyan-500/20 bg-[#05060c] text-xs text-slate-500"
+          style={{ height: isMobile ? 250 : 476 }}
+        >
+          menyiapkan audio engine…
+        </div>
+      )}
+
+      {player && (
+        <Transport
+          player={player}
+          duration={duration}
+          disabled={notes.length === 0}
+          hasPedal={pedal.length > 0}
+        />
+      )}
+
+      {notes.length > 0 && job?.pedal && !job.pedal.skipped && (
+        <p className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border border-pink-500/20 bg-pink-500/[0.06] px-3 py-2 text-[11px] text-pink-100/80">
+          <Zap size={11} className="text-pink-300" />
+          Sustain dideteksi dari rekaman:
+          <span className="font-mono text-pink-200">{job.pedal.segments ?? 0} segmen</span>
+          <span className="text-slate-500">·</span>
+          <span className="font-mono text-pink-200">
+            {Math.round((job.pedal.ratio ?? 0) * 100)}% durasi
+          </span>
+          <span className="text-slate-500">— mode Auto memakai ini</span>
+        </p>
+      )}
+
+      <div className="flex flex-wrap items-center gap-3 rounded-xl border border-cyan-500/20 bg-[#0a0c16]/80 px-3 py-2 text-[11px] text-slate-400 backdrop-blur">
+        <label className="flex items-center gap-2">
+          Zoom piano
+          <input
+            type="range"
+            min={14}
+            max={48}
+            step={1}
+            value={zoom}
+            onChange={(e) => setZoom(Number(e.target.value))}
+            className="h-1.5 w-24 cursor-pointer appearance-none rounded-full bg-white/10 accent-cyan-400"
+          />
+        </label>
+        <label className="flex items-center gap-2">
+          Rentang jatuh
+          <input
+            type="range"
+            min={1.5}
+            max={8}
+            step={0.25}
+            value={visibleSeconds}
+            onChange={(e) => setVisibleSeconds(Number(e.target.value))}
+            className="h-1.5 w-24 cursor-pointer appearance-none rounded-full bg-white/10 accent-pink-400 sm:w-28"
+          />
+          <span className="font-mono text-cyan-300">{visibleSeconds.toFixed(1)}s</span>
+        </label>
+        <span className="ml-auto flex items-center gap-1 text-slate-500">
+          <Zap size={11} className="text-cyan-400" /> {notes.length} not dimuat
+        </span>
+      </div>
+    </>
+  );
+
+  const soundGroup = (
+    <TransformPanel
+      instrument={instrument}
+      onInstrument={setInstrument}
+      speed={speed}
+      onSpeed={setSpeed}
+      transpose={transpose}
+      onTranspose={setTranspose}
+    />
+  );
+
+  const scoreGroup = (
+    <>
+      <SheetMusic notes={notes} bpm={bpm} title={title} />
+      <SharePanel job={job} title={title} semitones={transpose} speed={speed} />
+    </>
+  );
+
   return (
     <div className="min-h-dvh bg-[#05060c] text-slate-200">
       {/* ambient background */}
@@ -213,175 +412,63 @@ export default function Studio() {
         }}
       />
 
-      <div className="relative mx-auto max-w-[1500px] px-3 pb-24 pt-4 sm:px-5">
-        {/* header */}
-        <header className="mb-4 flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-3">
-            <span className="grid h-10 w-10 place-items-center rounded-xl bg-gradient-to-br from-cyan-400 to-pink-500 text-black shadow-[0_0_28px_-6px_rgba(0,240,255,0.9)]">
-              <AudioWaveform size={20} />
-            </span>
-            <div>
-              <h1 className="text-lg font-semibold tracking-tight text-white">
-                Midi<span className="text-cyan-300">Magic</span>
-              </h1>
-              <p className="text-[11px] text-slate-500">
-                Audio · YouTube → MIDI → Piano Visualizer
-              </p>
-            </div>
+      <div
+        className={`relative mx-auto max-w-[1500px] px-3 pt-4 sm:px-5 ${
+          isMobile ? "pb-28" : "pb-24"
+        }`}
+      >
+        {header}
+
+        {isMobile ? (
+          <div className="space-y-3">
+            {tab === "play" && playerGroup}
+            {tab === "source" && <div className="space-y-3">{sourceGroup}</div>}
+            {tab === "sound" && soundGroup}
+            {tab === "score" && <div className="space-y-3">{scoreGroup}</div>}
+            {tab === "library" && <div className="space-y-3">{libraryGroup}</div>}
           </div>
-
-          <div className="flex flex-wrap items-center gap-1.5">
-            {pills.map((p) => (
-              <span
-                key={p.label}
-                title={`${p.label}: ${p.value}`}
-                className={`flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[10px] ring-1 ${
-                  p.ok
-                    ? "bg-emerald-500/10 text-emerald-200 ring-emerald-400/25"
-                    : "bg-pink-500/10 text-pink-200 ring-pink-400/25"
-                }`}
-              >
-                <span
-                  className={`h-1.5 w-1.5 rounded-full ${p.ok ? "bg-emerald-400" : "bg-pink-400"}`}
-                />
-                {p.label}
-              </span>
-            ))}
-          </div>
-        </header>
-
-        <div className="grid gap-4 lg:grid-cols-[380px_1fr]">
-          {/* left column */}
-          <div className="space-y-4">
-            <SourcePanel
-              health={health}
-              busy={busy}
-              error={error}
-              onSubmitFile={submitFile}
-              onSubmitYoutube={submitYoutube}
-            />
-            <JobProgress job={job} uploadPct={uploadPct} />
-            <Library
-              jobs={jobs}
-              activeId={job?.id ?? null}
-              onSelect={loadResult}
-              onDelete={removeJob}
-              onRefresh={() => void refresh()}
-              loading={libBusy}
-            />
-            {stats && (
-              <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-2">
-                {[
-                  ["Konversi", stats.done],
-                  ["Aktif", stats.active],
-                  ["Total not", stats.notes],
-                  ["Share", stats.shares],
-                ].map(([label, value]) => (
-                  <div
-                    key={String(label)}
-                    className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2"
-                  >
-                    <p className="text-[10px] uppercase tracking-wider text-slate-500">
-                      {label}
-                    </p>
-                    <p className="font-mono text-sm text-cyan-200">{value}</p>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-
-          {/* right column */}
-          <div className="space-y-4">
-            {player ? (
-              <div className="relative">
-                <PianoRoll
-                  player={player}
-                  notes={notes}
-                  zoom={zoom}
-                  visibleSeconds={visibleSeconds}
-                  onSeek={(s) => player.seek(s)}
-                />
-                {!engineReady && (
-                  <div className="pointer-events-none absolute inset-0 grid place-items-center rounded-xl bg-black/60 backdrop-blur-sm">
-                    <span className="flex items-center gap-2 rounded-full bg-cyan-500/15 px-3 py-1.5 text-xs text-cyan-100 ring-1 ring-cyan-400/30">
-                      <Loader2 size={13} className="animate-spin" />
-                      memuat sample {INSTRUMENTS.find((i) => i.id === instrument)?.label}…
-                    </span>
-                  </div>
-                )}
-              </div>
-            ) : (
-              <div className="grid h-[476px] place-items-center rounded-xl border border-cyan-500/20 bg-[#05060c] text-xs text-slate-500">
-                menyiapkan audio engine…
-              </div>
-            )}
-
-            {player && (
-              <Transport player={player} duration={notes.length ? Math.max(...notes.map((n) => n.end)) : 0} disabled={notes.length === 0} />
-            )}
-
-            <div className="flex flex-wrap items-center gap-3 rounded-xl border border-cyan-500/20 bg-[#0a0c16]/80 px-3 py-2 text-[11px] text-slate-400 backdrop-blur">
-              <label className="flex items-center gap-2">
-                Zoom piano
-                <input
-                  type="range"
-                  min={14}
-                  max={48}
-                  step={1}
-                  value={zoom}
-                  onChange={(e) => setZoom(Number(e.target.value))}
-                  className="h-1.5 w-24 cursor-pointer appearance-none rounded-full bg-white/10 accent-cyan-400"
-                />
-              </label>
-              <label className="flex items-center gap-2">
-                Rentang jatuh
-                <input
-                  type="range"
-                  min={1.5}
-                  max={8}
-                  step={0.25}
-                  value={visibleSeconds}
-                  onChange={(e) => setVisibleSeconds(Number(e.target.value))}
-                  className="h-1.5 w-28 cursor-pointer appearance-none rounded-full bg-white/10 accent-pink-400"
-                />
-                <span className="font-mono text-cyan-300">{visibleSeconds.toFixed(1)}s</span>
-              </label>
-              <span className="ml-auto flex items-center gap-1 text-slate-500">
-                <Zap size={11} className="text-cyan-400" /> {notes.length} not dimuat
-              </span>
+        ) : (
+          <div className="grid gap-4 lg:grid-cols-[380px_1fr]">
+            {/* left column */}
+            <div className="space-y-4">
+              {sourceGroup}
+              {libraryGroup}
             </div>
 
-            <TransformPanel
-              instrument={instrument}
-              onInstrument={setInstrument}
-              speed={speed}
-              onSpeed={setSpeed}
-              transpose={transpose}
-              onTranspose={setTranspose}
-            />
-
-            <div className="grid gap-4 xl:grid-cols-2">
-              <SheetMusic notes={notes} bpm={bpm} title={title} />
-              <SharePanel
-                job={job}
-                title={title}
-                semitones={transpose}
-                speed={speed}
-              />
+            {/* right column */}
+            <div className="space-y-4">
+              {playerGroup}
+              {soundGroup}
+              <div className="grid gap-4 xl:grid-cols-2">{scoreGroup}</div>
             </div>
           </div>
-        </div>
+        )}
 
         <footer className="mt-8 flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-600">
           <span className="flex items-center gap-1.5">
             <Sparkles size={11} /> basic-pitch · Demucs · Tone.js · VexFlow
           </span>
           <span className="flex items-center gap-1.5">
-            <HardDrive size={11} /> backend <span className="font-mono">{API_BASE}</span> — semua proses lokal
+            <HardDrive size={11} /> backend <span className="font-mono">{API_BASE}</span> — semua
+            proses lokal
           </span>
         </footer>
       </div>
+
+      {isMobile && (
+        <BottomTabs
+          tab={tab}
+          onChange={setTab}
+          badges={{
+            source: running ? "busy" : undefined,
+            library: notes.length > 0 ? "ready" : undefined,
+          }}
+        />
+      )}
     </div>
   );
+}
+
+function truncate(s: string, n: number) {
+  return s.length > n ? `${s.slice(0, n - 1)}…` : s;
 }

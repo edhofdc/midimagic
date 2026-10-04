@@ -1,8 +1,16 @@
 """Stage 3 — audio to MIDI transcription.
 
 Primary engine: Spotify `basic-pitch` (polyphonic, AMT).
-Fallback engine: `librosa.pyin` monophonic melody tracker (always available,
-needed when basic-pitch/TensorFlow is not importable in this environment).
+Fallback engine: `librosa.pyin` monophonic melody tracker (always available).
+
+Accuracy notes
+--------------
+Raw uploads and YouTube rips vary wildly in loudness and carry rumble below the
+piano range; both make the model hallucinate notes. Every input is therefore
+peak-normalised and band-limited before it reaches the model. Percussive
+material (drum hits) is the other big source of ghost notes, so harmonic/
+percussive separation is applied by default — Demucs stems do this better, but
+they cost minutes, and this costs seconds.
 """
 from __future__ import annotations
 
@@ -19,9 +27,52 @@ from .. import config
 
 Log = Callable[[str, str], None]
 
+# Accuracy presets: (onset_threshold, frame_threshold, min_note_length,
+#                    min_frequency, max_frequency)
+#
+# Lower onset threshold = more sensitive (catches quiet notes, also more junk).
+# Higher frame threshold = a note must be sustained more confidently to count.
+PRESETS: dict[str, dict] = {
+    "fast": {
+        "onset_threshold": 0.60, "frame_threshold": 0.35, "min_note_length": 0.090,
+        "min_frequency": 55.0, "max_frequency": 3520.0,
+        "suppress_percussion": False,
+    },
+    "balanced": {
+        "onset_threshold": 0.50, "frame_threshold": 0.30, "min_note_length": 0.058,
+        "min_frequency": 41.2, "max_frequency": 4186.0,
+        "suppress_percussion": True,
+    },
+    "precise": {
+        "onset_threshold": 0.38, "frame_threshold": 0.22, "min_note_length": 0.042,
+        "min_frequency": 32.7, "max_frequency": 4978.0,
+        "suppress_percussion": True,
+    },
+}
+
+DEFAULT_PRESET = "balanced"
+
 
 class TranscribeError(RuntimeError):
     pass
+
+
+def resolve_options(opts: dict) -> dict:
+    """Merge a preset with any explicit per-job overrides."""
+    name = str(opts.get("accuracy") or DEFAULT_PRESET).lower()
+    merged = dict(PRESETS.get(name) or PRESETS[DEFAULT_PRESET])
+    for key in ("onset_threshold", "frame_threshold", "min_note_length",
+                "min_frequency", "max_frequency"):
+        if opts.get(key) is not None:
+            try:
+                merged[key] = float(opts[key])
+            except (TypeError, ValueError):
+                pass
+    for key in ("suppress_percussion",):
+        if opts.get(key) is not None:
+            merged[key] = str(opts[key]).lower() in ("1", "true", "yes", "on")
+    merged["preset"] = name if name in PRESETS else DEFAULT_PRESET
+    return merged
 
 
 def engine_available() -> str:
@@ -46,40 +97,95 @@ def _basic_pitch_bin() -> str | None:
     return shutil.which("basic-pitch")
 
 
-def transcribe(
-    src_wav: Path,
-    out_midi: Path,
-    engine: str,
-    onset: float,
-    frame: float,
-    min_note_len: float,
-    log: Log,
-) -> Path:
+# --------------------------------------------------------------------- prepare
+
+def prepare(src_wav: Path, dst_wav: Path, opts: dict, log: Log) -> Path:
+    """Normalise + band-limit (+ optionally de-percuss) the audio for the model."""
+    try:
+        import librosa
+        import soundfile as sf
+    except ImportError:                                     # pragma: no cover
+        return src_wav
+
+    try:
+        y, sr = librosa.load(str(src_wav), sr=config.ANALYSIS_SR, mono=True)
+        if y.size == 0:
+            return src_wav
+
+        before = y.shape[0]
+        # drop digital silence
+        y, _ = librosa.effects.trim(y, top_db=45)
+        peak = float(np.max(np.abs(y))) if y.size else 0.0
+        if peak > 1e-6:
+            y = (y / peak) * 0.92                       # peak normalise
+
+        y = _bandlimit(y, sr, float(opts.get("min_frequency", 41.2)),
+                       float(opts.get("max_frequency", 4186.0)))
+
+        if opts.get("suppress_percussion"):
+            left = librosa.effects.hpss(y, margin=(1.0, 5.0))
+            y = left[0]                                  # harmonic only
+
+        if y.size < sr:                                  # <1s of content left
+            y, sr = librosa.load(str(src_wav), sr=config.ANALYSIS_SR, mono=True)
+
+        sf.write(str(dst_wav), y.astype(np.float32), sr, subtype="PCM_16")
+        log("transcribing",
+            f"pra-proses: normalisasi + band-limit {opts.get('min_frequency'):.0f}-"
+            f"{opts.get('max_frequency'):.0f} Hz"
+            + (" + buang perkusi" if opts.get("suppress_percussion") else "")
+            + f" ({before / sr:.1f}s → {y.shape[0] / sr:.1f}s)")
+        return dst_wav
+    except Exception as exc:                                # noqa: BLE001
+        log("transcribing", f"pra-proses dilewati ({exc})")
+        return src_wav
+
+
+def _bandlimit(y: np.ndarray, sr: int, low: float, high: float) -> np.ndarray:
+    from scipy.signal import butter, sosfiltfilt
+
+    nyq = sr / 2.0
+    lo = max(20.0, min(low, nyq * 0.5)) / nyq
+    hi = max(lo + 0.01, min(high, nyq * 0.95)) / nyq
+    sos = butter(4, [lo, hi], btype="bandpass", output="sos")
+    out = sosfiltfilt(sos, y).astype(np.float32)
+    return out if out.size else y
+
+
+# ------------------------------------------------------------------ transcribe
+
+def transcribe(src_wav: Path, out_midi: Path, engine: str, opts: dict, log: Log) -> Path:
     out_midi.parent.mkdir(parents=True, exist_ok=True)
     if engine == "basic-pitch":
         try:
-            return _run_basic_pitch(src_wav, out_midi, onset, frame, min_note_len, log)
+            return _run_basic_pitch(src_wav, out_midi, opts, log)
         except TranscribeError as exc:
             log("transcribing", f"basic-pitch gagal → fallback pyin: {exc}")
             engine = "librosa-pyin"
     if engine == "librosa-pyin":
-        return _run_pyin(src_wav, out_midi, min_note_len, log)
+        return _run_pyin(src_wav, out_midi, float(opts.get("min_note_length", 0.06)), log)
     raise TranscribeError(f"engine tidak dikenal / tidak tersedia: {engine}")
 
 
-def _run_basic_pitch(src_wav: Path, out_midi: Path, onset: float, frame: float,
-                     min_note_len: float, log: Log) -> Path:
+def _run_basic_pitch(src_wav: Path, out_midi: Path, opts: dict, log: Log) -> Path:
     exe = _basic_pitch_bin()
     if not exe:
         raise TranscribeError("basic-pitch binary tidak ditemukan")
     work = out_midi.parent / "_bp"
+    if work.exists():
+        shutil.rmtree(work, ignore_errors=True)
     work.mkdir(parents=True, exist_ok=True)
-    log("transcribing", "basic-pitch: transkripsi polifonik (bisa beberapa menit)…")
+
+    log("transcribing",
+        f"basic-pitch [{opts.get('preset')}]: onset={opts['onset_threshold']:.2f} "
+        f"frame={opts['frame_threshold']:.2f} minlen={opts['min_note_length']:.3f}s")
     cmd = [
         exe, str(work), str(src_wav),
-        "--onset-threshold", str(onset),
-        "--frame-threshold", str(frame),
-        "--minimum-note-length", str(min_note_len),
+        "--onset-threshold", str(opts["onset_threshold"]),
+        "--frame-threshold", str(opts["frame_threshold"]),
+        "--minimum-note-length", str(opts["min_note_length"]),
+        "--minimum-frequency", str(opts["min_frequency"]),
+        "--maximum-frequency", str(opts["max_frequency"]),
         "--no-melodia",          # melodia is the slow legacy path
         "--save-midi",
     ]

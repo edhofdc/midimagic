@@ -6,8 +6,13 @@
  * Two things separate this from a toy: instruments are real recorded samples
  * (Tone.Sampler over the assets in public/audio), and there is a proper damper
  * model — notes ring for the sample's natural decay, the release envelope is
- * long, and a sustain-pedal toggle lets notes ring past their written length
- * exactly like holding the pedal down.
+ * long, and a sustain pedal lets notes ring past their written length exactly
+ * like holding the pedal down.
+ *
+ * The pedal is normally *not* a user setting: it is inferred per-recording on
+ * the backend (see pipelines/sustain.py) and arrives as MIDI CC64. "Auto" mode
+ * replays that pedal line, which is what makes a transcription sound like the
+ * performance it came from. On/Off remain as manual overrides.
  *
  * The visualiser needs a continuous, seekable clock, so the transport is a plain
  * `performance.now()` timeline; notes are pushed into Tone slightly ahead of the
@@ -36,11 +41,20 @@ export interface NoteEvent {
   velocity: number; // 0..1
 }
 
+/** One pedal-down stretch, as decoded from the MIDI's CC64 lane. */
+export interface PedalEvent {
+  start: number;
+  end: number;
+}
+
+export type PedalMode = "auto" | "on" | "off";
+
 export interface TickState {
   position: number;
   duration: number;
   playing: boolean;
   activeNotes: Set<number>; // midi numbers currently sounding
+  pedal: boolean; // damper pedal down right now
 }
 
 type AnyVoice = Tone.Sampler | Tone.PolySynth;
@@ -55,6 +69,13 @@ export class MidiPlayer {
   private notes: NoteEvent[] = [];
   private byOnset: NoteEvent[] = [];
   private schedulePtr = 0;
+
+  /* ---- damper pedal ---- */
+  private pedalEvents: { time: number; down: boolean }[] = [];
+  private pedalPtr = 0;
+  private pedalDown = false;
+  private pedalFromFile = false;
+  pedalMode: PedalMode = "auto";
 
   private playing = false;
   private position = 0;
@@ -73,8 +94,6 @@ export class MidiPlayer {
 
   speed = 1;
   transpose = 0;
-  /** Damper pedal. When true, notes are not released at their written end. */
-  sustain = false;
 
   duration = 0;
 
@@ -193,9 +212,12 @@ export class MidiPlayer {
       kind: this.voiceKind,
       ready: this.ready,
       releaseSec: this.releaseSec,
-      sustain: this.sustain,
+      pedalMode: this.pedalMode,
+      pedalDown: this.pedalDown,
+      pedalEvents: this.pedalEvents.length,
+      pedalFromFile: this.pedalFromFile,
       playing: this.playing,
-      position: this.position,
+      position: Number(this.position.toFixed(3)),
       activeVoices: Array.isArray(src) ? src.length : src instanceof Set ? src.size : -1,
       /** notes currently held by the damper pedal (0 when the pedal is up) */
       heldNotes: this.held.length,
@@ -208,19 +230,71 @@ export class MidiPlayer {
     this.gain.gain.rampTo(Math.max(0, Math.min(1, v)) * 1.2, 0.05);
   }
 
+  /* ----------------------------------------------------------------- pedal */
+
+  /** True when the MIDI we loaded actually carried a CC64 lane. */
+  hasPedalTrack() {
+    return this.pedalFromFile;
+  }
+
+  setPedalMode(mode: PedalMode) {
+    this.pedalMode = mode;
+    if (mode === "off") {
+      this.pedalDown = false;
+      this.releaseHeld();
+    } else if (mode === "on") {
+      this.pedalDown = true;
+    } else {
+      this.syncPedalTo(this.position);
+    }
+    this.emit();
+  }
+
+  /** Back-compat shim for callers that only know on/off. */
   setSustain(on: boolean) {
-    if (on === this.sustain) return;
-    this.sustain = on;
-    if (!on) this.releaseHeld();
+    this.setPedalMode(on ? "on" : "off");
+  }
+
+  private effectivePedal() {
+    if (this.pedalMode === "on") return true;
+    if (this.pedalMode === "off") return false;
+    return this.pedalDown;
+  }
+
+  /** Replay the CC64 lane up to `pos` so the pedal state is right after a seek. */
+  private syncPedalTo(pos: number) {
+    this.pedalPtr = 0;
+    this.pedalDown = false;
+    while (
+      this.pedalPtr < this.pedalEvents.length &&
+      this.pedalEvents[this.pedalPtr].time <= pos
+    ) {
+      this.pedalDown = this.pedalEvents[this.pedalPtr].down;
+      this.pedalPtr++;
+    }
   }
 
   /* ------------------------------------------------------------- transport */
 
-  load(notes: NoteEvent[], duration?: number) {
+  load(notes: NoteEvent[], duration?: number, pedal: PedalEvent[] = []) {
     this.stop();
     this.notes = [...notes].sort((a, b) => a.start - b.start);
     this.byOnset = this.notes;
     this.duration = duration ?? Math.max(0, ...this.notes.map((n) => n.end), 0);
+
+    // flatten the pedal intervals into an ordered CC64-style event stream
+    const events: { time: number; down: boolean }[] = [];
+    for (const p of pedal) {
+      if (p.end - p.start < 0.05) continue;
+      events.push({ time: p.start, down: true });
+      events.push({ time: p.end, down: false });
+    }
+    events.sort((a, b) => a.time - b.time);
+    this.pedalEvents = events;
+    this.pedalFromFile = events.length > 0;
+    this.pedalPtr = 0;
+    this.pedalDown = false;
+
     this.position = 0;
     this.emit();
   }
@@ -244,6 +318,8 @@ export class MidiPlayer {
       new Promise((r) => setTimeout(r, 1200)),
     ]);
     this.schedulePtr = this.lowerBound(this.position - 0.001);
+    this.syncPedalTo(this.position);
+    if (this.pedalMode === "on") this.pedalDown = true;
     this.playing = true;
     this.lastFrame = performance.now();
     this.loop();
@@ -253,6 +329,7 @@ export class MidiPlayer {
   pause() {
     this.playing = false;
     this.releaseHeld();
+    this.pedalDown = this.pedalMode === "on";
     if (this.rafId !== null) cancelAnimationFrame(this.rafId);
     this.rafId = null;
     this.emit();
@@ -264,6 +341,8 @@ export class MidiPlayer {
     if (this.rafId !== null) cancelAnimationFrame(this.rafId);
     this.rafId = null;
     this.position = 0;
+    this.syncPedalTo(0);
+    if (this.pedalMode === "on") this.pedalDown = true;
     this.emit();
   }
 
@@ -271,6 +350,8 @@ export class MidiPlayer {
     this.position = Math.max(0, Math.min(this.duration, sec));
     this.releaseHeld();
     this.schedulePtr = this.lowerBound(this.position - 0.001);
+    this.syncPedalTo(this.position);
+    if (this.pedalMode === "on") this.pedalDown = true;
     if (this.playing) this.lastFrame = performance.now();
     this.emit();
   }
@@ -327,44 +408,71 @@ export class MidiPlayer {
     return midiToName(Math.round(n.midi) + this.transpose);
   }
 
+  /**
+   * Walk notes and pedal events as one time-ordered stream, so a note is always
+   * voiced with the pedal state that actually applied when it sounded.
+   */
   private pump() {
     const horizon = this.position + LOOKAHEAD * this.speed;
-    while (
-      this.schedulePtr < this.byOnset.length &&
-      this.byOnset[this.schedulePtr].start <= horizon
-    ) {
-      const n = this.byOnset[this.schedulePtr];
-      const startDelay = Math.max(0, (n.start - this.position) / this.speed);
-      const when = Tone.now() + startDelay + 0.02;
-      const name = this.noteName(n);
-      const velocity = Math.max(0.08, Math.min(1, n.velocity));
+    for (;;) {
+      const nextNote =
+        this.schedulePtr < this.byOnset.length ? this.byOnset[this.schedulePtr].start : Infinity;
+      const nextPedal =
+        this.pedalPtr < this.pedalEvents.length ? this.pedalEvents[this.pedalPtr].time : Infinity;
+      const next = Math.min(nextNote, nextPedal);
+      if (next > horizon) break;
 
-      if (this.sustain) {
-        // pedal down: strike and leave it ringing until the pedal lifts
-        try {
-          this.voice?.triggerAttack(name, when, velocity);
-        } catch {
-          /* pitch outside the loaded range */
+      if (nextPedal <= nextNote) {
+        const ev = this.pedalEvents[this.pedalPtr++];
+        const at = Tone.now() + Math.max(0, (ev.time - this.position) / this.speed) + 0.02;
+        if (ev.down) {
+          this.pedalDown = true;
+        } else {
+          this.pedalDown = false;
+          // lift the damper at exactly this point in the performance
+          this.releaseHeld(at);
         }
-        this.held.push({ note: name, time: when });
-        while (this.held.length > this.maxPolyphony) {
-          const oldest = this.held.shift();
-          if (!oldest) break;
-          try {
-            (this.voice as Tone.Sampler | null)?.triggerRelease(oldest.note, Tone.now());
-          } catch {
-            /* already gone */
-          }
+        // a manual override ignores the recorded lane
+        if (this.pedalMode !== "auto") {
+          this.pedalDown = this.pedalMode === "on";
         }
       } else {
-        const durSec = Math.max(0.08, (n.end - n.start) / this.speed);
+        const n = this.byOnset[this.schedulePtr++];
+        this.voiceNote(n);
+      }
+    }
+  }
+
+  private voiceNote(n: NoteEvent) {
+    const startDelay = Math.max(0, (n.start - this.position) / this.speed);
+    const when = Tone.now() + startDelay + 0.02;
+    const name = this.noteName(n);
+    const velocity = Math.max(0.08, Math.min(1, n.velocity));
+
+    if (this.effectivePedal()) {
+      // pedal down: strike and leave it ringing until the pedal lifts
+      try {
+        this.voice?.triggerAttack(name, when, velocity);
+      } catch {
+        /* pitch outside the loaded range */
+      }
+      this.held.push({ note: name, time: when });
+      while (this.held.length > this.maxPolyphony) {
+        const oldest = this.held.shift();
+        if (!oldest) break;
         try {
-          this.voice?.triggerAttackRelease(name, durSec, when, velocity);
+          (this.voice as Tone.Sampler | null)?.triggerRelease(oldest.note, Tone.now());
         } catch {
-          /* pitch outside the loaded range */
+          /* already gone */
         }
       }
-      this.schedulePtr++;
+    } else {
+      const durSec = Math.max(0.08, (n.end - n.start) / this.speed);
+      try {
+        this.voice?.triggerAttackRelease(name, durSec, when, velocity);
+      } catch {
+        /* pitch outside the loaded range */
+      }
     }
   }
 
@@ -391,6 +499,7 @@ export class MidiPlayer {
       duration: this.duration,
       playing: this.playing,
       activeNotes: active,
+      pedal: this.effectivePedal(),
     };
     for (const cb of this.listeners) cb(state);
   }

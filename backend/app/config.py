@@ -36,5 +36,8 @@ YTDLP_JS_RUNTIME = os.environ.get("MIDIMAGIC_YT_JS_RUNTIME", "node")
 DEMUCS_MODEL = os.environ.get("MIDIMAGIC_DEMUCS_MODEL", "htdemucs")
 DEMUCS_TWO_STEMS = "vocals"
 
+# Audio analysis (transcription + pedal detection)
+ANALYSIS_SR = int(os.environ.get("MIDIMAGIC_ANALYSIS_SR", "22050"))
+
 for _d in (DATA_DIR, JOBS_DIR, MODELS_DIR):
     _d.mkdir(parents=True, exist_ok=True)

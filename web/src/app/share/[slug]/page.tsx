@@ -6,7 +6,8 @@ import Link from "next/link";
 import { AudioWaveform, Download, Loader2 } from "lucide-react";
 import { api, type ShareInfo } from "@/lib/api";
 import { loadMidi, sanitizeNotes, formatTime } from "@/lib/midi";
-import type { InstrumentId, MidiPlayer, NoteEvent } from "@/lib/audio";
+import type { InstrumentId, MidiPlayer, NoteEvent, PedalEvent } from "@/lib/audio";
+import { useIsMobile } from "@/lib/useMediaQuery";
 import PianoRoll from "@/components/PianoRoll";
 import Transport from "@/components/Transport";
 import TransformPanel from "@/components/TransformPanel";
@@ -14,10 +15,12 @@ import TransformPanel from "@/components/TransformPanel";
 export default function SharePage() {
   const params = useParams<{ slug: string }>();
   const slug = params?.slug ?? "";
+  const isMobile = useIsMobile();
 
   const [info, setInfo] = useState<ShareInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notes, setNotes] = useState<NoteEvent[]>([]);
+  const [pedal, setPedal] = useState<PedalEvent[]>([]);
   const [player, setPlayer] = useState<MidiPlayer | null>(null);
   const [instrument, setInstrument] = useState<InstrumentId>("grand-piano");
   const [speed, setSpeed] = useState(1);
@@ -49,6 +52,7 @@ export default function SharePage() {
         const parsed = await loadMidi(api.shareMidiUrl(slug));
         if (!alive) return;
         setNotes(sanitizeNotes(parsed.notes));
+        setPedal(parsed.pedal);
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
       }
@@ -69,8 +73,10 @@ export default function SharePage() {
     if (player) player.transpose = transpose;
   }, [player, transpose]);
   useEffect(() => {
-    if (player && notes.length) player.load(notes, Math.max(...notes.map((n) => n.end)));
-  }, [player, notes]);
+    if (player && notes.length) {
+      player.load(notes, Math.max(...notes.map((n) => n.end)), pedal);
+    }
+  }, [player, notes, pedal]);
 
   const duration = notes.length ? Math.max(...notes.map((n) => n.end)) : 0;
 
@@ -124,15 +130,25 @@ export default function SharePage() {
                   zoom={zoom}
                   visibleSeconds={3.5}
                   onSeek={(s) => player.seek(s)}
+                  rollHeight={isMobile ? 240 : 380}
+                  keyboardHeight={isMobile ? 72 : 96}
                 />
               ) : (
-                <div className="grid h-[476px] place-items-center rounded-xl border border-cyan-500/20 text-xs text-slate-500">
+                <div
+                  className="grid place-items-center rounded-xl border border-cyan-500/20 text-xs text-slate-500"
+                  style={{ height: isMobile ? 240 : 476 }}
+                >
                   menyiapkan audio engine…
                 </div>
               )}
 
               {player && (
-                <Transport player={player} duration={duration} disabled={!notes.length} />
+                <Transport
+                  player={player}
+                  duration={duration}
+                  disabled={!notes.length}
+                  hasPedal={pedal.length > 0}
+                />
               )}
 
               <TransformPanel

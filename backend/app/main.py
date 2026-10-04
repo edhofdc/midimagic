@@ -120,6 +120,8 @@ def health() -> dict:
             "workers": config.MAX_WORKERS,
             "yt_max_seconds": config.YTDLP_MAX_DURATION,
             "max_upload_mb": config.MAX_UPLOAD_BYTES // (1024 * 1024),
+            "accuracy_presets": list(transcribe.PRESETS.keys()),
+            "default_accuracy": transcribe.DEFAULT_PRESET,
         },
         "stats": db.stats(),
     }
@@ -148,18 +150,24 @@ async def create_job(request: Request) -> dict:
         ext = Path(raw_name).suffix.lower()
         if ext not in config.ALLOWED_EXT:
             raise HTTPException(400, f"format {ext or '?'} tidak didukung")
-        for key in ("stems", "stem_mode", "target", "engine"):
+        for key in ("stems", "stem_mode", "target", "engine", "accuracy"):
             if form.get(key) is not None:
                 opts[key] = str(form.get(key))
-        for key in ("onset_threshold", "frame_threshold", "min_note_length"):
+        for key in ("onset_threshold", "frame_threshold", "min_note_length",
+                    "min_frequency", "max_frequency", "merge_gap", "quantize"):
             if form.get(key) is not None:
                 try:
                     opts[key] = float(str(form.get(key)))
                 except ValueError:
                     pass
-        for key in ("stems",):
-            if key in opts:
-                opts[key] = str(opts[key]).lower() in ("1", "true", "yes", "on")
+        if form.get("min_velocity") is not None:
+            try:
+                opts["min_velocity"] = int(float(str(form.get("min_velocity"))))
+            except ValueError:
+                pass
+        for key in ("stems", "suppress_percussion"):
+            if form.get(key) is not None:
+                opts[key] = str(form.get(key)).lower() in ("1", "true", "yes", "on")
         jid = db.create_job("upload", "", opts, title=Path(raw_name).stem)
         job_dir = config.JOBS_DIR / jid
         job_dir.mkdir(parents=True, exist_ok=True)
