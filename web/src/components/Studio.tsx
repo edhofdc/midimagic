@@ -13,7 +13,6 @@ import JobProgress from "@/components/JobProgress";
 import PianoRoll from "@/components/PianoRoll";
 import Transport from "@/components/Transport";
 import TransformPanel from "@/components/TransformPanel";
-import SheetMusic from "@/components/SheetMusic";
 import SharePanel from "@/components/SharePanel";
 import Library from "@/components/Library";
 import BottomTabs, { type MobileTab } from "@/components/BottomTabs";
@@ -268,7 +267,7 @@ export default function Studio() {
         onSubmitFile={submitFile}
         onSubmitYoutube={submitYoutube}
       />
-      <JobProgress job={job} uploadPct={uploadPct} />
+      <JobProgress job={job} uploadPct={uploadPct} speedFactors={health?.speed_factors} />
     </>
   );
 
@@ -451,19 +450,17 @@ export default function Studio() {
   );
 
   const soundGroup = (
-    <TransformPanel
-      instrument={instrument}
-      onInstrument={setInstrument}
-      speed={speed}
-      onSpeed={setSpeed}
-      transpose={transpose}
-      onTranspose={setTranspose}
-    />
-  );
-
-  const scoreGroup = (
     <>
-      <SheetMusic notes={notes} bpm={bpm} title={title} pedal={pedal} />
+      <TransformPanel
+        instrument={instrument}
+        onInstrument={setInstrument}
+        speed={speed}
+        onSpeed={setSpeed}
+        transpose={transpose}
+        onTranspose={setTranspose}
+      />
+      {/* Export lives with the transpose/tempo controls on purpose: the
+          ".mid (transpose +N, X%)" button writes exactly what those sliders show. */}
       <SharePanel job={job} title={title} semitones={transpose} speed={speed} />
     </>
   );
@@ -491,8 +488,7 @@ export default function Studio() {
           <div className="space-y-3">
             {tab === "play" && playerGroup}
             {tab === "source" && <div className="space-y-3">{sourceGroup}</div>}
-            {tab === "sound" && soundGroup}
-            {tab === "score" && <div className="space-y-3">{scoreGroup}</div>}
+            {tab === "sound" && <div className="space-y-3">{soundGroup}</div>}
             {tab === "library" && <div className="space-y-3">{libraryGroup}</div>}
           </div>
         ) : (
@@ -504,22 +500,19 @@ export default function Studio() {
             </div>
 
             {/* right column — min-w-0 matters: a grid track defaults to
-                min-width:auto, so the wide piano-roll canvas and the score's
-                min-w-[900px] page would stretch the 1fr column past the viewport
-                and clip its right edge (the transport controls live there). */}
+                min-width:auto, so the wide piano-roll canvas would stretch the
+                1fr column past the viewport and clip its right edge (the
+                transport controls live there). */}
             <div className="min-w-0 space-y-4">
               {playerGroup}
               {soundGroup}
-              <div className="grid min-w-0 gap-4 xl:grid-cols-2 [&>*]:min-w-0">
-                {scoreGroup}
-              </div>
             </div>
           </div>
         )}
 
         <footer className="mt-8 flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-600">
           <span className="flex items-center gap-1.5">
-            <Sparkles size={11} /> transkun · Demucs · Tone.js · VexFlow
+            <Sparkles size={11} /> transkun · Demucs · Tone.js
           </span>
           <span className="flex items-center gap-1.5">
             <HardDrive size={11} /> backend <span className="font-mono">{API_BASE}</span> — semua

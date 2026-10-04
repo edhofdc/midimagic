@@ -121,7 +121,12 @@ def _run(job_id: str) -> None:
     engine = raw_opts.get("engine") or transcribe.engine_available()
     log("transcribing", f"engine: {engine}")
     midi_path = job_dir / "output.mid"
-    transcribe.transcribe(prepared, midi_path, engine, opts, log)
+
+    def tprog(frac: float, message: str) -> None:
+        # the transcribe stage runs from 0.60 to 0.88 of the pipeline
+        _stage(job_id, "transcribing", 0.60 + 0.28 * max(0.0, min(1.0, frac)), message)
+
+    transcribe.transcribe(prepared, midi_path, engine, opts, log, progress=tprog)
 
     # ---------------------------------------------------------- 5. finalize
     _stage(job_id, "finalizing", 0.88, "membersihkan hasil MIDI")

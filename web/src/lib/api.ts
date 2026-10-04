@@ -80,6 +80,8 @@ export interface PedalInfo {
 export interface Health {
   status: string;
   time: number;
+  speed_factors?: Record<string, number>;
+  limits?: { max_duration_seconds?: number; long_audio_seconds?: number };
   engines: {
     transcription: string;
     transkun: boolean;

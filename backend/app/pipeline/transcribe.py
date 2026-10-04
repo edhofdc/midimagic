@@ -284,11 +284,12 @@ def _bandlimit(y: np.ndarray, sr: int, low: float, high: float) -> np.ndarray:
 
 # ------------------------------------------------------------------ transcribe
 
-def transcribe(src_wav: Path, out_midi: Path, engine: str, opts: dict, log: Log) -> Path:
+def transcribe(src_wav: Path, out_midi: Path, engine: str, opts: dict, log: Log,
+               progress=None) -> Path:
     out_midi.parent.mkdir(parents=True, exist_ok=True)
     if engine == "transkun":
         try:
-            return _run_transkun(src_wav, out_midi, opts, log)
+            return _run_transkun(src_wav, out_midi, opts, log, progress=progress)
         except TranscribeError as exc:
             log("transcribing", f"transkun gagal → fallback basic-pitch: {exc}")
             engine = "basic-pitch"
@@ -318,16 +319,18 @@ def _retempo(src: Path, dst: Path, bpm: float) -> Path:
     return dst
 
 
-def _run_transkun(src_wav: Path, out_midi: Path, opts: dict, log: Log) -> Path:
-    """Piano-specialist transcription via the isolated transkun venv."""
-    exe = config.TRANSKUN_PYTHON
-    if not Path(exe).exists():
-        raise TranscribeError(f"transkun python tidak ada: {exe}")
+def _duration_of(path: Path) -> float:
+    try:
+        import soundfile as sf
+        info = sf.info(str(path))
+        return float(info.frames) / float(info.samplerate or 1)
+    except Exception:
+        return 0.0
 
+
+def _transkun_once(src_wav: Path, out_midi: Path, opts: dict, log: Log) -> Path:
+    exe = config.TRANSKUN_PYTHON
     templ = out_midi.parent / "transkun_raw.mid"
-    log("transcribing",
-        f"transkun: model semi-CRF piano, device={config.TRANSKUN_DEVICE} "
-        f"(khusus piano; lebih lambat dari basic-pitch)")
     cmd = [exe, "-m", "transkun.transcribe", str(src_wav), str(templ),
            "--device", config.TRANSKUN_DEVICE]
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=14400)
@@ -336,11 +339,137 @@ def _run_transkun(src_wav: Path, out_midi: Path, opts: dict, log: Log) -> Path:
             f"transkun exit {r.returncode}: {(r.stderr or r.stdout)[-500:]}")
     if r.returncode != 0:
         log("transcribing", f"transkun exit {r.returncode} tapi menghasilkan MIDI")
-
     # transkun always writes 120 BPM; without the real tempo every bar line in
     # the rendered score lands wrong (same reason as the basic-pitch path).
     _retempo(templ, out_midi, float(opts.get("tempo") or 120.0))
     templ.unlink(missing_ok=True)
+    return out_midi
+
+
+def _transkun_chunked(src_wav: Path, out_midi: Path, opts: dict, log: Log,
+                      duration: float, progress=None) -> Path:
+    """Transcribe a long file in overlapping windows and merge the results.
+
+    Running transkun on 98 minutes in one call would hold the whole recording's
+    intermediate tensors at once, and this box has ~5 GB free. Windows keep peak
+    memory equal to a short run. The cost is identical overall (the model is
+    linear in audio length), so nothing is traded except a little merge code.
+
+    Every window is `step + overlap` long, and the merge drops a note when the
+    same pitch was already seen within 40ms — which is exactly the duplicate a
+    note straddling a boundary produces. A note clipped by a window edge is
+    therefore recovered from the neighbouring window that saw it whole.
+    """
+    import soundfile as sf
+
+    exe = config.TRANSKUN_PYTHON
+    step = max(30.0, float(config.TRANSKUN_CHUNK_SECONDS))
+    ov = max(0.0, float(config.TRANSKUN_CHUNK_OVERLAP))
+    windows: list[tuple[float, float]] = []
+    t = 0.0
+    while t < duration - 0.5:
+        windows.append((t, min(duration, t + step + ov)))
+        t += step
+
+    info = sf.info(str(src_wav))
+    sr = int(info.samplerate or 22050)
+    log("transcribing",
+        f"transkun: audio panjang ({duration / 60:.1f} menit) → {len(windows)} window "
+        f"@{step:.0f}s (+{ov:.0f}s tumpang tindih), device={config.TRANSKUN_DEVICE}")
+
+    notes: list[tuple[float, float, int, int]] = []
+    ccs: list[tuple[float, int, int]] = []
+    failed = 0
+    for i, (a, b) in enumerate(windows):
+        piece = out_midi.parent / f"chunk_{i:03d}.wav"
+        raw = out_midi.parent / f"chunk_{i:03d}_raw.mid"
+        data, _ = sf.read(str(src_wav), start=int(a * sr), stop=int(b * sr),
+                          dtype="float32", always_2d=True)
+        sf.write(str(piece), data, sr)
+        del data
+        r = subprocess.run(
+            [exe, "-m", "transkun.transcribe", str(piece), str(raw),
+             "--device", config.TRANSKUN_DEVICE],
+            capture_output=True, text=True, timeout=7200)
+        piece.unlink(missing_ok=True)
+        if not raw.exists():
+            failed += 1
+            log("transcribing", f"window {i + 1}/{len(windows)} gagal (dilewati): "
+                                f"{(r.stderr or r.stdout).strip()[-180:]}")
+        else:
+            pm = pretty_midi.PrettyMIDI(str(raw))
+            for inst in pm.instruments:
+                for n in inst.notes:
+                    notes.append((n.start + a, n.end + a, int(n.pitch), int(n.velocity)))
+                for c in inst.control_changes:
+                    ccs.append((c.time + a, int(c.number), int(c.value)))
+            raw.unlink(missing_ok=True)
+            if progress:
+                progress((i + 1) / len(windows),
+                         f"transkripsi window {i + 1}/{len(windows)} selesai "
+                         f"({len(notes)} not sejauh ini)")
+
+    if not notes:
+        raise TranscribeError(
+            f"transkun tidak menghasilkan not pada {len(windows)} window "
+            f"({failed} gagal) — audio mungkin bukan piano solo")
+
+    # ---- merge the overlap duplicates -------------------------------------
+    # Same pitch, onset within 40ms: the boundary-straddling note seen twice.
+    notes.sort(key=lambda n: (n[2], n[0]))
+    kept: list[tuple[float, float, int, int]] = []
+    for n in notes:
+        if kept and kept[-1][2] == n[2] and n[0] - kept[-1][0] < 0.04:
+            if (n[1] - n[0]) > (kept[-1][1] - kept[-1][0]):
+                kept[-1] = n
+            continue
+        kept.append(n)
+    joined = len(notes) - len(kept)
+    kept.sort(key=lambda n: n[0])
+
+    ccs.sort(key=lambda c: c[0])
+    kcc: list[tuple[float, int, int]] = []
+    for c in ccs:
+        if kcc and kcc[-1][1] == c[1] and abs(c[0] - kcc[-1][0]) < 0.03:
+            continue
+        kcc.append(c)
+
+    # ---- write one MIDI, tempo already correct ---------------------------
+    pm_out = pretty_midi.PrettyMIDI(initial_tempo=float(opts.get("tempo") or 120.0))
+    inst = pretty_midi.Instrument(program=0, is_drum=False, name="Piano")
+    for s, e, p, v in kept:
+        if e - s < 0.005:
+            e = s + 0.02
+        inst.notes.append(pretty_midi.Note(velocity=v, pitch=p,
+                                           start=float(s), end=float(e)))
+    for t, num, val in kcc:
+        inst.control_changes.append(
+            pretty_midi.ControlChange(number=num, value=val, time=float(t)))
+    pm_out.instruments.append(inst)
+    out_midi.parent.mkdir(parents=True, exist_ok=True)
+    pm_out.write(str(out_midi))
+    log("transcribing",
+        f"transkun chunked: {len(kept)} not dari {len(windows)} window "
+        f"({joined} duplikat tumpang tindih dibuang, {len(kcc)} CC pedal), "
+        f"tempo {float(opts.get('tempo') or 120.0):.1f} BPM")
+    return out_midi
+
+
+def _run_transkun(src_wav: Path, out_midi: Path, opts: dict, log: Log,
+                  progress=None) -> Path:
+    """Piano-specialist transcription via the isolated transkun venv."""
+    exe = config.TRANSKUN_PYTHON
+    if not Path(exe).exists():
+        raise TranscribeError(f"transkun python tidak ada: {exe}")
+
+    duration = _duration_of(src_wav)
+    if duration > config.LONG_AUDIO_SECONDS and config.TRANSKUN_CHUNK_SECONDS > 0:
+        return _transkun_chunked(src_wav, out_midi, opts, log, duration, progress)
+
+    log("transcribing",
+        f"transkun: model semi-CRF piano, device={config.TRANSKUN_DEVICE} "
+        f"(khusus piano; lebih lambat dari basic-pitch)")
+    _transkun_once(src_wav, out_midi, opts, log)
     log("transcribing", f"transkun: MIDI ditulis ({out_midi.name}, tempo "
                         f"{float(opts.get('tempo') or 120.0):.1f} BPM)")
     return out_midi

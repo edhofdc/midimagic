@@ -84,6 +84,12 @@ def from_youtube(url: str, job_dir: Path, job_id: str, log: Log) -> tuple[Path, 
             f"durasi {int(dur)}s melebihi batas {config.YTDLP_MAX_DURATION}s"
         )
 
+    # A 98-minute stereo 44.1k WAV is ~1 GB. The analysis path downsamples to
+    # 22.05k mono anyway, and a solo-piano preview gains nothing from stereo, so
+    # long inputs are decoded straight to that shape and land 4x smaller.
+    long_audio = bool(dur and dur > config.LONG_AUDIO_SECONDS)
+    ffmpeg_args = "ffmpeg:-ac 1 -ar 22050" if long_audio else "ffmpeg:-ac 2 -ar 44100"
+
     log("fetching", "mengunduh audio dari YouTube…")
     raw_out = job_dir / "source_raw.%(ext)s"
     cmd = [
@@ -91,7 +97,7 @@ def from_youtube(url: str, job_dir: Path, job_id: str, log: Log) -> tuple[Path, 
         "-f", config.YTDLP_FORMAT,
         "--max-filesize", "200M",
         "-x", "--audio-format", "wav", "--audio-quality", "0",
-        "--postprocessor-args", "ffmpeg:-ac 2 -ar 44100",
+        "--postprocessor-args", ffmpeg_args,
         "-o", str(raw_out), url,
     ]
     proc = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)

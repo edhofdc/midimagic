@@ -16,14 +16,26 @@ const STAGES: { id: string; label: string }[] = [
 interface Props {
   job: Job | null;
   uploadPct?: number | null;
+  /** engine → wall-clock cost as a multiple of audio length (from /health) */
+  speedFactors?: Record<string, number>;
 }
 
-export default function JobProgress({ job, uploadPct }: Props) {
+export default function JobProgress({ job, uploadPct, speedFactors }: Props) {
   if (!job) return null;
 
   const order = STAGES.map((s) => s.id);
   const activeIdx = order.indexOf(job.stage === "queued" ? "fetching" : job.stage);
   const failed = job.status === "error";
+
+  // Long inputs are a long wait, and it is better to say so up front than to let
+  // someone conclude the app has hung. The engine is named in the job's own events
+  // (the pipeline logs "engine: transkun"), so no extra request is needed.
+  const engine = job.events
+    ?.find((e) => e.message.startsWith("engine: "))
+    ?.message.slice("engine: ".length)
+    .trim();
+  const factor = engine ? speedFactors?.[engine] : undefined;
+  const estMinutes = factor && job.duration ? (job.duration * factor) / 60 : 0;
 
   return (
     <motion.section
@@ -112,6 +124,16 @@ export default function JobProgress({ job, uploadPct }: Props) {
           </motion.p>
         )}
       </AnimatePresence>
+
+      {estMinutes > 0 && job.status === "running" && (
+        <p className="mt-2 text-[11px] text-slate-500">
+          perkiraan total ≈ <span className="font-mono text-slate-400">
+            {estMinutes >= 1 ? `${Math.round(estMinutes)} menit` : `${Math.round(estMinutes * 60)} detik`}
+          </span>{" "}
+          · {engine} {factor}× durasi audio
+          {estMinutes >= 10 && " — biarkan tab ini terbuka, proses jalan di server"}
+        </p>
+      )}
 
       {failed && (
         <pre className="mt-3 max-h-40 overflow-auto whitespace-pre-wrap rounded-lg border border-pink-500/20 bg-black/40 p-2.5 font-mono text-[11px] text-pink-200/90">

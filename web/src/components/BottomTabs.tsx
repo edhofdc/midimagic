@@ -1,14 +1,13 @@
 "use client";
 
-import { FileMusic, FolderOpen, ListMusic, Piano, SlidersHorizontal } from "lucide-react";
+import { FolderOpen, ListMusic, Piano, SlidersHorizontal } from "lucide-react";
 
-export type MobileTab = "play" | "source" | "sound" | "score" | "library";
+export type MobileTab = "play" | "source" | "sound" | "library";
 
 const TABS: { id: MobileTab; label: string; Icon: typeof Piano }[] = [
   { id: "play", label: "Putar", Icon: Piano },
   { id: "source", label: "Sumber", Icon: ListMusic },
   { id: "sound", label: "Suara", Icon: SlidersHorizontal },
-  { id: "score", label: "Partitur", Icon: FileMusic },
   { id: "library", label: "Pustaka", Icon: FolderOpen },
 ];
 

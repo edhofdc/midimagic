@@ -165,7 +165,21 @@ export default function SourcePanel({
           />
           <p className="text-[11px] text-slate-500">
             Audio di-download via yt-dlp. Batas durasi{" "}
-            {Math.round((health?.config.yt_max_seconds ?? 900) / 60)} menit.
+            {Math.round(
+              (health?.limits?.max_duration_seconds ?? health?.config.yt_max_seconds ?? 7200) / 60,
+            )}{" "}
+            menit.
+            {(() => {
+              const f = health?.speed_factors?.transkun;
+              const lim = health?.limits?.long_audio_seconds ?? 600;
+              return f ? (
+                <>
+                  {" "}Di atas {Math.round(lim / 60)} menit transkun jalan per-window
+                  (aman memori), dan waktunya ≈ <b>{(f * 60).toFixed(0)} menit per jam audio</b> —
+                  video 1,5 jam ≈ 1 jam proses. Mau cepat? pilih basic-pitch.
+                </>
+              ) : null;
+            })()}
           </p>
         </div>
       )}

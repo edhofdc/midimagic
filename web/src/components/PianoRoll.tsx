@@ -35,6 +35,20 @@ export default function PianoRoll({
 
   const layout = useMemo(() => layoutKeys(width), [width]);
 
+  // A 98-minute transcription is ~40k notes and this draw runs every frame. The
+  // loop below used to walk the array from index 0 each time, skipping the
+  // already-played ones one comparison at a time — fine at 1.5k notes, tens of
+  // thousands of wasted comparisons per frame at this size. Notes sorted by onset
+  // plus the longest note in the piece let a binary search jump straight to the
+  // first note that can still be visible: anything starting before
+  // (now - longest) has already finished sounding, whatever the pedal did.
+  const { byStart, maxLen } = useMemo(() => {
+    const sorted = [...notes].sort((a, b) => a.start - b.start);
+    let m = 0;
+    for (const n of sorted) m = Math.max(m, n.end - n.start);
+    return { byStart: sorted, maxLen: m };
+  }, [notes]);
+
   const draw = useCallback(
     (state: TickState) => {
       const canvas = canvasRef.current;
@@ -87,7 +101,17 @@ export default function PianoRoll({
       // falling notes
       const horizon = pos + visibleSeconds + 1;
       ctx.save();
-      for (const n of notes) {
+      // jump to the first note that could still be on screen (see byStart above)
+      let lo = 0;
+      let hi = byStart.length;
+      const floorStart = pos - maxLen - 0.05;
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (byStart[mid].start < floorStart) lo = mid + 1;
+        else hi = mid;
+      }
+      for (let i = lo; i < byStart.length; i++) {
+        const n = byStart[i];
         if (n.end < pos - 0.05) continue;
         if (n.start > horizon) break;
 

@@ -107,6 +107,11 @@ def health() -> dict:
     return {
         "status": "ok",
         "time": time.time(),
+        "limits": {
+            "max_duration_seconds": config.YTDLP_MAX_DURATION,
+            "long_audio_seconds": config.LONG_AUDIO_SECONDS,
+        },
+        "speed_factors": config.SPEED_FACTOR,
         "engines": {
             "transcription": transcribe.engine_available(),
             "transkun": transcribe.transkun_available(),
