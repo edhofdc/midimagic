@@ -519,7 +519,7 @@ export default function Studio() {
 
         <footer className="mt-8 flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-600">
           <span className="flex items-center gap-1.5">
-            <Sparkles size={11} /> basic-pitch · Demucs · Tone.js · VexFlow
+            <Sparkles size={11} /> transkun · Demucs · Tone.js · VexFlow
           </span>
           <span className="flex items-center gap-1.5">
             <HardDrive size={11} /> backend <span className="font-mono">{API_BASE}</span> — semua
