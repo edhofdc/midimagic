@@ -60,6 +60,7 @@ CREATE INDEX IF NOT EXISTS idx_jobs_created ON jobs(created_at DESC);
 MIGRATIONS: list[tuple[str, str, str]] = [
     ("jobs", "pedal", "ALTER TABLE jobs ADD COLUMN pedal TEXT NOT NULL DEFAULT '{}'"),
     ("jobs", "accuracy", "ALTER TABLE jobs ADD COLUMN accuracy TEXT NOT NULL DEFAULT ''"),
+    ("jobs", "tempo", "ALTER TABLE jobs ADD COLUMN tempo REAL NOT NULL DEFAULT 0"),
 ]
 
 

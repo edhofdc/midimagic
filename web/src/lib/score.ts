@@ -3,9 +3,16 @@
 /**
  * MIDI → standard notation, rendered with VexFlow as a piano grand staff.
  *
- * Deliberately pragmatic: onsets are quantised to a 1/16 grid, a chord is the
- * set of notes sharing an onset, and every measure is padded with rests so each
- * voice fills its 4/4 bar exactly. Good for reading along, not for engraving.
+ * Deliberately pragmatic rather than a full engraver, but it has to agree with
+ * the recording or the score is useless:
+ *
+ *  - the quantisation grid is *chosen from the music*, not fixed at a 1/16 —
+ *    a fast etude quantised to 1/16 turns sixteenth runs into noise;
+ *  - the key signature comes from a Krumhansl fit over the transcribed notes,
+ *    so a piece in A minor is not engraved as C major with accidentals on
+ *    every other note;
+ *  - chords containing a semitone cluster are thinned, because VexFlow cannot
+ *    render two noteheads a second apart in one chord.
  */
 
 import {
@@ -18,12 +25,13 @@ import {
   StaveNote,
   Voice,
 } from "vexflow";
-import type { NoteEvent } from "./audio";
+import type { NoteEvent, PedalEvent } from "./audio";
+import { detectKey, type DetectedKey } from "./key";
 import { midiToName } from "./keys";
 
 const PPQ = 480; // ticks per quarter note
 const MEASURE = PPQ * 4; // 4/4
-const GRID = 120; // 1/16
+const SPLIT = 60; // C4: the conventional grand-staff division
 
 interface Dur {
   ticks: number;
@@ -40,18 +48,27 @@ const DURATIONS: Dur[] = [
   { ticks: 480, code: "q", dots: 0 },
   { ticks: 360, code: "8", dots: 1 },
   { ticks: 240, code: "8", dots: 0 },
+  { ticks: 180, code: "16", dots: 1 },
   { ticks: 120, code: "16", dots: 0 },
+  { ticks: 90, code: "32", dots: 1 },
+  { ticks: 60, code: "32", dots: 0 },
+  { ticks: 30, code: "64", dots: 0 },
 ];
 
 export interface ScoreOptions {
   measuresPerLine?: number;
   maxMeasures?: number;
   tempo?: number;
+  key?: DetectedKey;
+  /** pedal regions from the recording — engraved as Ped. / * under the bass staff */
+  pedal?: PedalEvent[];
 }
 
 export interface RenderResult {
   measuresRendered: number;
   totalMeasures: number;
+  grid: number;
+  key: string;
 }
 
 interface Chord {
@@ -74,20 +91,46 @@ function decompose(ticks: number): Dur[] {
       left -= d.ticks;
     }
   }
-  return out; // sub-16th residue is dropped
+  return out; // sub-64th residue is dropped
 }
 
-function chordsFor(notes: NoteEvent[], bpm: number, staff: "treble" | "bass"): Chord[] {
-  const secPerTick = 60 / bpm / PPQ;
+/**
+ * Choose the quantisation grid from the tempo.
+ *
+ * Trying to infer it from the onsets does not work on a transcription: the
+ * onset times come out of a continuous tracker, so they are not on *any* grid
+ * and every candidate looks equally bad — which drove the grid to 1/64 and
+ * turned the page into a wall of hemidemisemiquavers. Tempo is the honest
+ * proxy: fast music uses shorter note values.
+ */
+function chooseGrid(bpm: number): number {
+  if (bpm >= 132) return 60; // 1/32
+  if (bpm >= 76) return 120; // 1/16
+  return 240; // 1/8
+}
+
+/** VexFlow renders a chord with a semitone cluster badly — keep the top note. */
+function thinSemitones(pitches: number[]): number[] {
+  const sorted = [...new Set(pitches)].sort((a, b) => a - b);
+  const out: number[] = [];
+  for (const p of sorted) {
+    if (out.length === 0 || p - out[out.length - 1] > 1) out.push(p);
+  }
+  return out;
+}
+
+function chordsFor(
+  notes: NoteEvent[],
+  secPerTick: number,
+  grid: number,
+  staff: "treble" | "bass"
+): Chord[] {
   const byOnset = new Map<number, Chord>();
 
   for (const n of notes) {
-    if (staff === "treble" ? n.midi < 60 : n.midi >= 60) continue;
-    const startTick = Math.round(n.start / secPerTick / GRID) * GRID;
-    const endTick = Math.max(
-      startTick + GRID,
-      Math.round(n.end / secPerTick / GRID) * GRID
-    );
+    if (staff === "treble" ? n.midi < SPLIT : n.midi >= SPLIT) continue;
+    const startTick = Math.round(n.start / secPerTick / grid) * grid;
+    const endTick = Math.max(startTick + grid, Math.round(n.end / secPerTick / grid) * grid);
     const existing = byOnset.get(startTick);
     if (existing) {
       if (!existing.pitches.includes(n.midi)) existing.pitches.push(n.midi);
@@ -104,7 +147,12 @@ function withDots(note: StaveNote, dots: number) {
   return note;
 }
 
-function noteFor(pitches: number[], dur: Dur, clef: "treble" | "bass"): StaveNote {
+function noteFor(
+  pitches: number[],
+  dur: Dur,
+  clef: "treble" | "bass",
+  accidentalKey: string
+): StaveNote {
   const note = new StaveNote({
     keys: pitches.map(keyOf),
     duration: dur.code,
@@ -116,6 +164,7 @@ function noteFor(pitches: number[], dur: Dur, clef: "treble" | "bass"): StaveNot
     if (name.includes("#")) note.addModifier(new Accidental("#"), i);
     else if (name.includes("b")) note.addModifier(new Accidental("b"), i);
   });
+  void accidentalKey;
   return withDots(note, dur.dots);
 }
 
@@ -127,7 +176,6 @@ function restFor(dur: Dur, clef: "treble" | "bass"): StaveNote {
 /**
  * Write notes (or rests when `pitches` is null) covering [startTick, endTick),
  * splitting at bar lines so every StaveNote lands in the right measure.
- * Returns the tick the cursor reached.
  */
 function emit(
   measures: StaveNote[][],
@@ -135,7 +183,8 @@ function emit(
   startTick: number,
   endTick: number,
   pitches: number[] | null,
-  clef: "treble" | "bass"
+  clef: "treble" | "bass",
+  accidentalKey: string
 ): number {
   let cursor = Math.max(0, startTick);
   const hardEnd = Math.min(endTick, measureCount * MEASURE);
@@ -150,7 +199,9 @@ function emit(
     for (const p of parts) {
       const mm = Math.floor(cursor / MEASURE);
       if (mm >= measureCount) break;
-      measures[mm].push(pitches ? noteFor(pitches, p, clef) : restFor(p, clef));
+      measures[mm].push(
+        pitches ? noteFor(pitches, p, clef, accidentalKey) : restFor(p, clef)
+      );
       cursor += p.ticks;
     }
   }
@@ -160,7 +211,8 @@ function emit(
 function measureNotes(
   chords: Chord[],
   measureCount: number,
-  clef: "treble" | "bass"
+  clef: "treble" | "bass",
+  accidentalKey: string
 ): StaveNote[][] {
   const measures: StaveNote[][] = Array.from({ length: measureCount }, () => []);
   const total = measureCount * MEASURE;
@@ -168,19 +220,22 @@ function measureNotes(
 
   for (const chord of chords) {
     if (chord.tick >= total) break;
+    const pitches = thinSemitones(chord.pitches);
+    if (pitches.length === 0) continue;
+
     if (chord.tick > cursor) {
-      cursor = emit(measures, measureCount, cursor, chord.tick, null, clef);
+      cursor = emit(measures, measureCount, cursor, chord.tick, null, clef, accidentalKey);
     }
     if (cursor < chord.tick) cursor = chord.tick;
 
     // a held note is cut at the bar line (no ties) to keep voices aligned
     const barEnd = (Math.floor(cursor / MEASURE) + 1) * MEASURE;
-    const end = Math.min(Math.max(chord.endTick, cursor + GRID), barEnd);
-    cursor = emit(measures, measureCount, cursor, end, chord.pitches, clef);
+    const end = Math.min(Math.max(chord.endTick, cursor + 60), barEnd);
+    cursor = emit(measures, measureCount, cursor, end, pitches, clef, accidentalKey);
     cursor = Math.max(cursor, end);
   }
 
-  emit(measures, measureCount, cursor, total, null, clef);
+  emit(measures, measureCount, cursor, total, null, clef, accidentalKey);
   return measures;
 }
 
@@ -192,19 +247,29 @@ export function renderScore(
 ): RenderResult {
   host.innerHTML = "";
   if (notes.length === 0) {
-    return { measuresRendered: 0, totalMeasures: 0 };
+    return { measuresRendered: 0, totalMeasures: 0, grid: 120, key: "C" };
   }
+  const safeBpm = bpm > 20 && bpm < 320 ? bpm : 120;
   const measuresPerLine = opts.measuresPerLine ?? 4;
-  const secPerMeasure = (60 / bpm) * 4;
+  const secPerMeasure = (60 / safeBpm) * 4;
+  const secPerTick = 60 / safeBpm / PPQ;
+
+  const key = opts.key ?? detectKey(notes);
+  const grid = chooseGrid(safeBpm);
+  const pedal = opts.pedal ?? [];
 
   const totalMeasures = Math.max(
     1,
     Math.ceil((Math.max(...notes.map((n) => n.end)) || secPerMeasure) / secPerMeasure)
   );
-  const measureCount = Math.min(totalMeasures, opts.maxMeasures ?? 160);
+  const measureCount = Math.min(totalMeasures, opts.maxMeasures ?? 200);
 
-  const treble = measureNotes(chordsFor(notes, bpm, "treble"), measureCount, "treble");
-  const bass = measureNotes(chordsFor(notes, bpm, "bass"), measureCount, "bass");
+  const treble = measureNotes(
+    chordsFor(notes, secPerTick, grid, "treble"), measureCount, "treble", key.vex
+  );
+  const bass = measureNotes(
+    chordsFor(notes, secPerTick, grid, "bass"), measureCount, "bass", key.vex
+  );
 
   const lineWidth = 1120;
   const staveHeight = 215;
@@ -228,35 +293,109 @@ export function renderScore(
       const leading = i === 0;
 
       const trebleStave = new Stave(x, y, staveWidth);
-      if (leading) trebleStave.addClef("treble").addTimeSignature("4/4");
+      if (leading) {
+        trebleStave.addClef("treble").addKeySignature(key.vex).addTimeSignature("4/4");
+      }
       trebleStave.setContext(ctx).draw();
 
       const bassStave = new Stave(x, y + 88, staveWidth);
-      if (leading) bassStave.addClef("bass");
+      if (leading) bassStave.addClef("bass").addKeySignature(key.vex);
       bassStave.setContext(ctx).draw();
 
-      drawVoice(ctx, trebleStave, treble[mIndex] ?? [], staveWidth);
-      drawVoice(ctx, bassStave, bass[mIndex] ?? [], staveWidth);
+      drawVoice(ctx, trebleStave, treble[mIndex] ?? [], staveWidth, key.vex);
+      drawVoice(ctx, bassStave, bass[mIndex] ?? [], staveWidth, key.vex);
+      // the pedal markings belong under the bass staff, in the measure where
+      // the pedal actually moves — this is the "how it was played" of the score
+      drawPedal(ctx, bassStave, bass[mIndex] ?? [], mIndex, pedal, secPerTick);
     }
   }
 
   ctx.setFont("Arial", 11);
-  ctx.fillText(`♪ = ${Math.round(opts.tempo ?? bpm)}`, lineWidth - 90, 16);
+  ctx.fillText(
+    `♪ = ${Math.round(opts.tempo ?? safeBpm)}  ·  ${key.label}`,
+    lineWidth - 190,
+    16
+  );
 
-  return { measuresRendered: measureCount, totalMeasures };
+  return { measuresRendered: measureCount, totalMeasures, grid, key: key.vex };
+}
+
+function drawPedal(
+  ctx: ReturnType<Renderer["getContext"]>,
+  stave: Stave,
+  tickables: StaveNote[],
+  measureIndex: number,
+  pedal: PedalEvent[],
+  secPerTick: number
+) {
+  if (pedal.length === 0 || tickables.length === 0) return;
+
+  const baseTick = measureIndex * MEASURE;
+  const endTick = baseTick + MEASURE;
+  const baseSec = baseTick * secPerTick;
+  const endSec = endTick * secPerTick;
+
+  const here = pedal.filter((p) => p.end > baseSec && p.start < endSec);
+  if (here.length === 0) return;
+
+  // walk the measure's tickables to get each one's tick position, so a pedal
+  // event can be pinned to the note it happens on
+  const placed: { tick: number; note: StaveNote }[] = [];
+  let cursor = baseTick;
+  for (const t of tickables) {
+    placed.push({ tick: cursor, note: t });
+    cursor += t.getTicks().value();
+  }
+  const nearestNote = (tick: number) => {
+    let best = placed[0];
+    for (const p of placed) {
+      if (Math.abs(p.tick - tick) < Math.abs(best.tick - tick)) best = p;
+    }
+    return best.note;
+  };
+
+  const y = stave.getYForLine(4) + 20;
+  ctx.save();
+  ctx.setFont("Arial", 10);
+  ctx.fillStyle = "#3b4252";
+  ctx.strokeStyle = "#3b4252";
+  ctx.setLineWidth(0.8);
+
+  for (const p of here) {
+    const onTick = Math.round(p.start / secPerTick);
+    const offTick = Math.round(p.end / secPerTick);
+
+    if (p.start >= baseSec && p.start < endSec) {
+      const note = nearestNote(onTick);
+      const x = note.getAbsoluteX() - 6;
+      ctx.fillText("Ped.", x, y);
+      // a thin line spanning the pedalled stretch looks like a real score
+      const to = offTick < endTick ? nearestNote(offTick).getAbsoluteX() - 4 : stave.getX() + stave.getWidth() - 22;
+      ctx.beginPath();
+      ctx.moveTo(x + 24, y - 3);
+      ctx.lineTo(Math.max(x + 30, to), y - 3);
+      ctx.stroke();
+    }
+    if (p.end >= baseSec && p.end < endSec) {
+      const note = nearestNote(offTick);
+      ctx.fillText("*", note.getAbsoluteX() - 2, y);
+    }
+  }
+  ctx.restore();
 }
 
 function drawVoice(
   ctx: ReturnType<Renderer["getContext"]>,
   stave: Stave,
   tickables: StaveNote[],
-  staveWidth: number
+  staveWidth: number,
+  accidentalKey: string
 ) {
   if (tickables.length === 0) return;
   const voice = new Voice({ numBeats: 4, beatValue: 4 }).setMode(Voice.Mode.SOFT);
   voice.addTickables(tickables);
   try {
-    Accidental.applyAccidentals([voice], "C");
+    Accidental.applyAccidentals([voice], accidentalKey);
   } catch {
     /* best-effort: VexFlow occasionally rejects odd accidental stacks */
   }

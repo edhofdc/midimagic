@@ -39,6 +39,11 @@ def main() -> int:
     prepared = transcribe.prepare(src, out / "prepared.wav", opts, log)
     t_prep = time.time() - t0
 
+    t0 = time.time()
+    tempo = transcribe.detect_tempo(prepared, log=lambda s, m: print(f"[{s:>12}] {m}"))
+    opts["tempo"] = tempo
+    print(f"tempo terdeteksi: {tempo:.1f} BPM   ({time.time() - t0:.1f}s)")
+
     engine = transcribe.engine_available()
     midi = out / "raw.mid"
     t0 = time.time()
@@ -68,6 +73,11 @@ def main() -> int:
           f"{written['pedalled_seconds']:.1f}s "
           f"({written['ratio'] * 100:.0f}% durasi)")
     print(f"midi written  : {midi}")
+
+    import subprocess
+    print("\n=== accuracy ===")
+    subprocess.run([sys.executable, str(Path(__file__).parent / "accuracy_report.py"),
+                    str(prepared), str(midi)], check=False)
     return 0
 
 

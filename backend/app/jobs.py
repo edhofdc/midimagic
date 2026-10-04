@@ -108,6 +108,14 @@ def _run(job_id: str) -> None:
         prep_opts["suppress_percussion"] = False
     prepared = transcribe.prepare(target_audio, job_dir / "prepared.wav", prep_opts, log)
 
+    # ---------------------------------------------------------- 3b. tempo
+    # The tempo header drives every bar line in the rendered score, and
+    # basic-pitch writes 120 BPM unless told otherwise.
+    tempo = float(raw_opts.get("tempo") or 0) or transcribe.detect_tempo(prepared, log=log)
+    opts["tempo"] = tempo
+    db.update_job(job_id, tempo=tempo)
+    log("preparing", f"tempo: {tempo:.1f} BPM")
+
     # ---------------------------------------------------------- 4. transcribe
     _stage(job_id, "transcribing", 0.60, "mengubah audio menjadi MIDI")
     engine = raw_opts.get("engine") or transcribe.engine_available()
@@ -144,6 +152,7 @@ def _run(job_id: str) -> None:
         midi_path=str(midi_path), audio_path=str(wav),
         note_count=int(summary["note_count"]),
         duration=float(summary["duration"] or duration or 0),
+        tempo=tempo,
         pedal=pedal,
         error="",
     )

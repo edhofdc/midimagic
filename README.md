@@ -147,6 +147,7 @@ Backend membaca env var berikut (default di `backend/app/config.py`):
 | `MIDIMAGIC_YT_JS_RUNTIME` | `node` | JS runtime untuk ekstraksi YouTube (kosongkan untuk mematikan) |
 | `MIDIMAGIC_MAX_UPLOAD_MB` | `60` | batas upload |
 | `MIDIMAGIC_ANALYSIS_SR` | `22050` | sample rate analisis (transkripsi + deteksi pedal) |
+| `MIDIMAGIC_TEMPO` | *(otomatis)* | override tempo; kosongkan supaya dideteksi dari audio |
 
 Frontend: `NEXT_PUBLIC_API_BASE` di `web/.env.local` — **di-bake saat build**, jadi ubah lalu
 `npm run build` ulang.
@@ -170,7 +171,7 @@ Opsi job: `stems` (bool), `stem_mode` (`vocals`\|`full`), `target`
 (`melody`\|`instrumental`\|`mix`), `engine` (`basic-pitch`\|`librosa-pyin`),
 `accuracy` (`fast`\|`balanced`\|`precise`), `onset_threshold`, `frame_threshold`,
 `min_note_length`, `min_frequency`, `max_frequency`, `suppress_percussion`,
-`min_velocity`, `merge_gap`, `quantize`.
+`min_velocity`, `merge_gap`, `quantize`, `tempo`.
 
 `accuracy` memilih satu set threshold; mengirim `onset_threshold` / `frame_threshold` /
 `min_note_length` secara eksplisit akan menimpainya.
@@ -231,6 +232,46 @@ Perbedaan −4 dB vs −33 dB itulah yang dipakai algoritma untuk memutuskan.
 Mode pedal di UI: **Auto** (memakai hasil deteksi), **On** (paksa tahan), **Off** (paksa lepas).
 Piano roll menampilkan lampu pedal kecil di atas keyboard saat pedal sedang aktif.
 
+### Partitur (not balok)
+
+Tiga hal menentukan apakah partitur cocok dengan rekaman, dan ketiganya dulu salah:
+
+1. **Tempo.** Header tempo MIDI-lah yang memetakan detik ke waktu musikal. basic-pitch
+   selalu menulis **120 BPM** kalau tidak diberi tahu, jadi setiap garis birama jatuh di
+   tempat yang salah. Sekarang tempo dideteksi dari audio dan diteruskan ke basic-pitch
+   (`--midi-tempo`). Contoh nyata: Rachmaninoff Op. 39 No. 6 terdeteksi **136 BPM**
+   (sebelumnya 120).
+2. **Kunci (key signature).** Dulu dipaksa C mayor, jadi semua accidental ditulis eksplisit
+   dan tanda kunci salah. Sekarang kunci dideteksi dengan kecocokan profil
+   Krumhansl-Kessler atas not hasil transkripsi.
+3. **Grid kuantisasi.** Dulu kaku 1/16. Sekarang dipilih dari tempo (1/8 · 1/16 · 1/32)
+   karena onset hasil transkripsi sifatnya kontinu — menebak grid dari jarak antar-onset
+   selalu gagal dan menghasilkan halaman penuh not 1/64.
+
+Selain itu, **tanda pedal (Ped. / \*)** digambar di bawah bass staff mengikuti CC64 hasil
+deteksi — jadi "cara mainnya" ikut terlihat di partitur, bukan cuma terdengar.
+
+#### Deteksi kunci: kenapa dibobot register
+
+Pada repertoar kromatik, bobot durasi saja tidak cukup. Op. 39 No. 6 milik Rachmaninoff
+mendapat skor **0.9717 untuk E major** melawan **0.9715 untuk A minor** — praktis seri.
+Bass yang menentukan tonalitas, jadi not rendah diberi bobot lebih besar:
+
+```
+weight = durasi × (1 + max(0, (72 − midi)) / 24)      // sampai 2× di dasar piano
+```
+
+Diuji pada dua lagu yang kuncinya diketahui; hanya pembobotan ini yang benar di keduanya:
+
+| Skema | Op. 39 No. 6 (A minor) | Canon in D (D major) |
+|---|---|---|
+| durasi saja | ✗ E major | ✓ D major |
+| jumlah onset | ✓ A minor | ✓ D major |
+| **durasi × bass boost** | **✓ A minor** | **✓ D major** |
+| bass line (nada terendah per onset) | ✓ A minor | ✓ D major |
+| sepertiga not terendah | ✗ E major | ✓ D major |
+| harmoni penutup saja | ✗ F# minor | ✓ D major |
+
 ## Uji
 
 ```bash
@@ -253,6 +294,19 @@ cd backend
 `gap_shape.py` mencetak bentuk decay di dalam setiap jeda antar-not — inilah data yang
 menentukan ambang `RINGING_RATIO`: piano yang dipedal turun hanya beberapa dB, yang teredam
 jatuh puluhan dB.
+
+Menilai ketepatan terhadap rekaman aslinya:
+
+```bash
+cd backend
+.venv/bin/python tests/accuracy_report.py prepared.wav output.mid
+.venv/bin/python tests/key_probe.py       output.mid "A minor"
+```
+
+`accuracy_report.py` merender MIDI-nya jadi audio (synth harmonik sederhana), lalu
+membandingkan **chroma** dengan rekaman asli — time-aligned maupun bebas-waktu (DTW) —
+plus precision/recall onset terhadap onset detector librosa. `key_probe.py` mencetak
+perbandingan beberapa skema pembobotan kunci terhadap kunci yang kamu tahu benar.
 
 ## Performa (mesin 4 vCPU, tanpa GPU)
 

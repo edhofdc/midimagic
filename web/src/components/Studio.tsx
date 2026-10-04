@@ -376,7 +376,10 @@ export default function Studio() {
           <span className="font-mono text-cyan-300">{visibleSeconds.toFixed(1)}s</span>
         </label>
         <span className="ml-auto flex items-center gap-1 text-slate-500">
-          <Zap size={11} className="text-cyan-400" /> {notes.length} not dimuat
+          <Zap size={11} className="text-cyan-400" /> {notes.length} not
+        </span>
+        <span className="flex items-center gap-1 font-mono text-pink-200" title="Tempo terdeteksi dari rekaman">
+          ♪ = {Math.round(bpm)}
         </span>
       </div>
     </>
@@ -395,7 +398,7 @@ export default function Studio() {
 
   const scoreGroup = (
     <>
-      <SheetMusic notes={notes} bpm={bpm} title={title} />
+      <SheetMusic notes={notes} bpm={bpm} title={title} pedal={pedal} />
       <SharePanel job={job} title={title} semitones={transpose} speed={speed} />
     </>
   );

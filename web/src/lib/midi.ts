@@ -78,7 +78,7 @@ export function readPedal(midi: Midi): PedalEvent[] {
 }
 
 /** Trim notes outside the 88-key range and optionally thin out very dense chords. */
-export function sanitizeNotes(notes: NoteEvent[], maxChord = 10): NoteEvent[] {
+export function sanitizeNotes(notes: NoteEvent[], maxChord = 16): NoteEvent[] {
   const inRange = notes.filter((n) => n.midi >= 21 && n.midi <= 108 && n.end > n.start);
   const out: NoteEvent[] = [];
   let i = 0;

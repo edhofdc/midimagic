@@ -154,7 +154,7 @@ async def create_job(request: Request) -> dict:
             if form.get(key) is not None:
                 opts[key] = str(form.get(key))
         for key in ("onset_threshold", "frame_threshold", "min_note_length",
-                    "min_frequency", "max_frequency", "merge_gap", "quantize"):
+                    "min_frequency", "max_frequency", "merge_gap", "quantize", "tempo"):
             if form.get(key) is not None:
                 try:
                     opts[key] = float(str(form.get(key)))

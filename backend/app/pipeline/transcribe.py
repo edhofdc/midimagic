@@ -57,6 +57,74 @@ class TranscribeError(RuntimeError):
     pass
 
 
+# ------------------------------------------------------------------- tempo
+
+def detect_tempo(audio_path: Path, fallback: float = 120.0, log: Log | None = None) -> float:
+    """Estimate the piece's tempo.
+
+    This is not cosmetic. The MIDI's tempo header is what maps seconds to
+    musical time, so a wrong tempo puts every bar line in the wrong place and
+    the rendered sheet music becomes unreadable. basic-pitch writes 120 BPM
+    unless told otherwise.
+
+    The librosa tempo API has moved twice: `librosa.beat.tempo` (0.10),
+    `librosa.feature.rhythm.tempo` (<1.0) and, in 1.0, only
+    `librosa.beat.beat_track`. Try them in order rather than pinning one.
+    """
+    def _fail(msg: str) -> float:
+        if log:
+            log("preparing", f"tempo: {msg} → pakai {fallback:.0f} BPM")
+        return fallback
+
+    try:
+        import librosa
+
+        y, sr = librosa.load(str(audio_path), sr=config.ANALYSIS_SR, mono=True)
+        if y.size < sr * 3:
+            return _fail("audio terlalu pendek")
+        onset_env = librosa.onset.onset_strength(y=y, sr=sr, hop_length=512)
+        if onset_env.size == 0 or float(onset_env.max()) <= 0:
+            return _fail("tidak ada onset")
+
+        est = None
+        errors = []
+        rhythm = getattr(getattr(librosa, "feature", None), "rhythm", None)
+        if rhythm is not None and hasattr(rhythm, "tempo"):
+            try:
+                est = rhythm.tempo(onset_envelope=onset_env, sr=sr, hop_length=512,
+                                   aggregate=np.median)
+            except Exception as exc:                        # noqa: BLE001
+                errors.append(f"rhythm.tempo: {exc}")
+        if est is None and hasattr(librosa.beat, "tempo"):
+            try:
+                est = librosa.beat.tempo(onset_envelope=onset_env, sr=sr,
+                                         hop_length=512, aggregate=np.median)
+            except Exception as exc:                        # noqa: BLE001
+                errors.append(f"beat.tempo: {exc}")
+        if est is None:
+            try:
+                est, _beats = librosa.beat.beat_track(
+                    onset_envelope=onset_env, sr=sr, hop_length=512
+                )
+            except Exception as exc:                        # noqa: BLE001
+                errors.append(f"beat_track: {exc}")
+
+        if est is None:
+            return _fail("; ".join(errors) or "tidak ada API tempo yang cocok")
+
+        bpm = float(np.atleast_1d(np.asarray(est, dtype=float))[0])
+        if not np.isfinite(bpm) or bpm <= 0:
+            return _fail("hasil tidak valid")
+        # fold octave errors into a musically plausible range
+        while bpm < 55:
+            bpm *= 2
+        while bpm > 210:
+            bpm /= 2
+        return round(bpm, 2)
+    except Exception as exc:                                # noqa: BLE001
+        return _fail(f"{type(exc).__name__}: {exc}")
+
+
 def resolve_options(opts: dict) -> dict:
     """Merge a preset with any explicit per-job overrides."""
     name = str(opts.get("accuracy") or DEFAULT_PRESET).lower()
@@ -163,7 +231,8 @@ def transcribe(src_wav: Path, out_midi: Path, engine: str, opts: dict, log: Log)
             log("transcribing", f"basic-pitch gagal → fallback pyin: {exc}")
             engine = "librosa-pyin"
     if engine == "librosa-pyin":
-        return _run_pyin(src_wav, out_midi, float(opts.get("min_note_length", 0.06)), log)
+        return _run_pyin(src_wav, out_midi, float(opts.get("min_note_length", 0.06)), log,
+                         tempo=float(opts.get("tempo") or 120.0))
     raise TranscribeError(f"engine tidak dikenal / tidak tersedia: {engine}")
 
 
@@ -178,7 +247,8 @@ def _run_basic_pitch(src_wav: Path, out_midi: Path, opts: dict, log: Log) -> Pat
 
     log("transcribing",
         f"basic-pitch [{opts.get('preset')}]: onset={opts['onset_threshold']:.2f} "
-        f"frame={opts['frame_threshold']:.2f} minlen={opts['min_note_length']:.3f}s")
+        f"frame={opts['frame_threshold']:.2f} minlen={opts['min_note_length']:.3f}s "
+        f"tempo={float(opts.get('tempo') or 120.0):.1f} BPM")
     cmd = [
         exe, str(work), str(src_wav),
         "--onset-threshold", str(opts["onset_threshold"]),
@@ -186,6 +256,8 @@ def _run_basic_pitch(src_wav: Path, out_midi: Path, opts: dict, log: Log) -> Pat
         "--minimum-note-length", str(opts["min_note_length"]),
         "--minimum-frequency", str(opts["min_frequency"]),
         "--maximum-frequency", str(opts["max_frequency"]),
+        # without this the file claims 120 BPM and every bar line lands wrong
+        "--midi-tempo", str(float(opts.get("tempo") or 120.0)),
         "--no-melodia",          # melodia is the slow legacy path
         "--save-midi",
     ]
@@ -200,7 +272,8 @@ def _run_basic_pitch(src_wav: Path, out_midi: Path, opts: dict, log: Log) -> Pat
     return out_midi
 
 
-def _run_pyin(src_wav: Path, out_midi: Path, min_note_len: float, log: Log) -> Path:
+def _run_pyin(src_wav: Path, out_midi: Path, min_note_len: float, log: Log,
+              tempo: float = 120.0) -> Path:
     """Monophonic fallback: f0 tracking → note segmentation → pretty_midi."""
     import librosa
 
@@ -246,7 +319,7 @@ def _run_pyin(src_wav: Path, out_midi: Path, min_note_len: float, log: Log) -> P
     if not notes:
         raise TranscribeError("tidak ada not terdeteksi dari audio")
 
-    pm = pretty_midi.PrettyMIDI()
+    pm = pretty_midi.PrettyMIDI(initial_tempo=float(tempo or 120.0))
     inst = pretty_midi.Instrument(program=0, name="Melody")
     inst.notes = notes
     inst.control_changes.append(pretty_midi.ControlChange(number=7, value=100, time=0))
