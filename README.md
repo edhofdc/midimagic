@@ -13,7 +13,7 @@ Audio / YouTube ──> yt-dlp + ffmpeg ──> [Demucs stem AI] ──> basic-p
                           └────────────► preview audio ◄───────────────┘
                                                                        │
                                           Next.js UI  ◄──── MIDI ──────┘
-                          (falling notes, 88-key piano, partitur VexFlow, Tone.js synth)
+                          (falling notes, 88-key piano, Tone.js synth)
 ```
 
 ## Fitur
@@ -31,9 +31,8 @@ Audio / YouTube ──> yt-dlp + ffmpeg ──> [Demucs stem AI] ──> basic-p
 | Play / Pause / Stop / Seek / Volume | ✅ | transport dengan range-request audio + level meter |
 | **Sustain pedal otomatis** | ✅ | pedal dideteksi dari rekaman (CC64), mode Auto/On/Off |
 | Tempo & Pitch shifting | ✅ | 25%–200% tanpa ubah pitch; transpose −12…+12 semitone |
-| Sheet Music Generator | ✅ | **VexFlow** grand staff treble+bass, 4/4 |
 | Multi-Instrument Synth | ✅ | 4 instrumen **berbasis rekaman asli** (sample) + 2 sintetis |
-| Export | ✅ | `.mid` asli (sudah membawa pedal), `.mid` transpose/tempo, `.pdf` partitur |
+| Export | ✅ | `.mid` asli (sudah membawa pedal), `.mid` transpose/tempo |
 | Share link | ✅ | slug unik, halaman `/share/<slug>` read-only + penghitung kunjungan |
 | **Layout mobile** | ✅ | bottom tab bar, kartu, piano roll dipendekkan, tanpa scroll horizontal |
 
@@ -43,7 +42,7 @@ Dua proses, karena bagian AI-nya Python:
 
 | Bagian | Stack | Port |
 |---|---|---|
-| `web/` — UI | Next.js 16 (App Router) · Tailwind v4 · Framer Motion · Tone.js · @tonejs/midi · VexFlow · jsPDF | **8891** |
+| `web/` — UI | Next.js 16 (App Router) · Tailwind v4 · Framer Motion · Tone.js · @tonejs/midi | **8891** |
 | `backend/` — pipeline | FastAPI · yt-dlp · Demucs · basic-pitch (ONNX) · librosa · pretty_midi · ffmpeg | **8892** |
 
 State disimpan di SQLite (`backend/data/midimagic.db`) dengan tabel `jobs`, `shares`, `events`
@@ -232,45 +231,17 @@ Perbedaan −4 dB vs −33 dB itulah yang dipakai algoritma untuk memutuskan.
 Mode pedal di UI: **Auto** (memakai hasil deteksi), **On** (paksa tahan), **Off** (paksa lepas).
 Piano roll menampilkan lampu pedal kecil di atas keyboard saat pedal sedang aktif.
 
-### Partitur (not balok)
+### Partitur (dihapus)
 
-Tiga hal menentukan apakah partitur cocok dengan rekaman, dan ketiganya dulu salah:
+Fitur partitur/not-balok **sudah dihapus** atas permintaan: komponen `SheetMusic.tsx`,
+penata balok VexFlow (`lib/score.ts`), deteksi kunci (`lib/key.ts`), tab Partitur di HP,
+dan dependensi `vexflow`/`jspdf`/`svg2pdf.js` — semuanya hilang dari repo, bukan sekadar
+disembunyikan. Fokus aplikasi sekarang: transkripsi yang presisi + piano roll + playback.
 
-1. **Tempo.** Header tempo MIDI-lah yang memetakan detik ke waktu musikal. basic-pitch
-   selalu menulis **120 BPM** kalau tidak diberi tahu, jadi setiap garis birama jatuh di
-   tempat yang salah. Sekarang tempo dideteksi dari audio dan diteruskan ke basic-pitch
-   (`--midi-tempo`). Contoh nyata: Rachmaninoff Op. 39 No. 6 terdeteksi **136 BPM**
-   (sebelumnya 120).
-2. **Kunci (key signature).** Dulu dipaksa C mayor, jadi semua accidental ditulis eksplisit
-   dan tanda kunci salah. Sekarang kunci dideteksi dengan kecocokan profil
-   Krumhansl-Kessler atas not hasil transkripsi.
-3. **Grid kuantisasi.** Dulu kaku 1/16. Sekarang dipilih dari tempo (1/8 · 1/16 · 1/32)
-   karena onset hasil transkripsi sifatnya kontinu — menebak grid dari jarak antar-onset
-   selalu gagal dan menghasilkan halaman penuh not 1/64.
-
-Selain itu, **tanda pedal (Ped. / \*)** digambar di bawah bass staff mengikuti CC64 hasil
-deteksi — jadi "cara mainnya" ikut terlihat di partitur, bukan cuma terdengar.
-
-#### Deteksi kunci: kenapa dibobot register
-
-Pada repertoar kromatik, bobot durasi saja tidak cukup. Op. 39 No. 6 milik Rachmaninoff
-mendapat skor **0.9717 untuk E major** melawan **0.9715 untuk A minor** — praktis seri.
-Bass yang menentukan tonalitas, jadi not rendah diberi bobot lebih besar:
-
-```
-weight = durasi × (1 + max(0, (72 − midi)) / 24)      // sampai 2× di dasar piano
-```
-
-Diuji pada dua lagu yang kuncinya diketahui; hanya pembobotan ini yang benar di keduanya:
-
-| Skema | Op. 39 No. 6 (A minor) | Canon in D (D major) |
-|---|---|---|
-| durasi saja | ✗ E major | ✓ D major |
-| jumlah onset | ✓ A minor | ✓ D major |
-| **durasi × bass boost** | **✓ A minor** | **✓ D major** |
-| bass line (nada terendah per onset) | ✓ A minor | ✓ D major |
-| sepertiga not terendah | ✗ E major | ✓ D major |
-| harmoni penutup saja | ✗ F# minor | ✓ D major |
+Catatan historis: **tempo tetap penting** walau partitur sudah tidak ada. Header tempo di
+MIDI dipakai pemutar untuk memetakan detik ke birama, jadi tempo yang salah tetap membuat
+playback dan piano roll meleset. Tempo dideteksi dari audio lalu ditulis ke header MIDI
+(contoh: Op. 39 No. 6 terdeteksi **136 BPM**, bukan 120 bawaan model).
 
 ### Kenapa hasilnya bisa "ngelantur" dari rekaman
 
@@ -313,12 +284,9 @@ disetel dari clock pemutar). Kalau masih terasa maju/mundur, ada kontrol geser �
 
 Kalau tombol ini butuh geseran besar, itu **bug pipeline, bukan selera** — laporkan.
 
-### Koreksi manual partitur
+### Koreksi manual
 
-Deteksi kunci dan tempo itu heuristik, jadi keduanya bisa ditimpa di panel partitur:
-dropdown kunci (28 pilihan) dan input ♪ = BPM. Kalau kunci hasil deteksi ambigu
-(selisih skor antar-kandidat < 0.01), UI memberi peringatan eksplisit — itu terjadi
-pada repertoar kromatik seperti Op. 39 No. 6, di mana E major dan A minor nyaris seri.
+Tempo itu heuristik, jadi bisa ditimpa lewat input ♪ = BPM di panel pemutar.
 
 ### Cache header (penting saat deploy ulang)
 
@@ -416,7 +384,7 @@ dipercaya bukan koreksinya, tapi efek terukurnya.
 
 Transkun melaporkan durasi **tekanan tuts**, bukan durasi **bunyi**. Di bawah pedal,
 not berbunyi selama pedal ditahan. Tanpa koreksi ini playback terdengar dipetik-petik
-dan partitur terbaca staccato di mana-mana. `pipeline/pedal_extend.py` menahan setiap
+(nada terpotong pendek di mana-mana). `pipeline/pedal_extend.py` menahan setiap
 not sampai pedal dilepas, dibatasi tiga hal: tidak melewati serangan berikutnya pada
 nada yang sama (restrike meredam senar), tidak melewati akhir rekaman, dan tidak lebih
 dari `MIDIMAGIC_TRANSKUN_MAX_EXTEND` (default 6s).
@@ -509,7 +477,7 @@ midimagic/
 ├── web/
 │   ├── src/app/{page,layout,globals.css,share/[slug]/page.tsx}
 │   ├── src/components/        # Studio, PianoRoll, Transport, BottomTabs (mobile), dll
-│   ├── src/lib/               # api, audio (Tone), midi (+CC64), score (VexFlow), keys,
+│   ├── src/lib/               # api, audio (Tone), midi (+CC64),
 │   │                          # instruments, useMediaQuery
 │   └── public/audio/          # sample instrumen (Salamander + MusyngKite)
 └── deploy/                    # unit systemd
@@ -518,11 +486,11 @@ midimagic/
 ### Mobile
 
 Breakpoint tunggal di 1023 px (`useMediaQuery.ts`). Di bawah itu Studio berubah jadi satu
-kolom + **bottom tab bar** (Putar · Sumber · Suara · Partitur · Pustaka), piano roll
+kolom + **bottom tab bar** (Putar · Sumber · Suara · Pustaka), piano roll
 dipendekkan (250 px + keyboard 74 px), dan `overflow-x` dikunci supaya tidak ada scroll
 horizontal. Posisi tab dipertahankan saat memuat hasil baru (otomatis pindah ke **Putar**).
 Halaman share memakai breakpoint yang sama.
 
 ## Kredit
 
-basic-pitch (Spotify) · Demucs (Meta) · Tone.js · VexFlow · yt-dlp · Next.js
+basic-pitch (Spotify) · Transkun (MIT, Yujia Yan) · Demucs (Meta) · Tone.js · yt-dlp · Next.js

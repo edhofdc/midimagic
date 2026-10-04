@@ -46,15 +46,18 @@ def main() -> int:
 
     data, sr = sf.read(str(src), dtype="float32", always_2d=True)
     mono = data.mean(axis=1)
-    need = int(minutes * 60 * sr)
+    TARGET_SR = 22050
+    # length must be computed at the rate we WRITE at, not the source rate —
+    # mixing them built a 40-minute file when 20 was asked for
+    need = int(minutes * 60 * TARGET_SR)
     reps = int(need / len(mono)) + 1
     # np.tile, not list multiplication: tolist() on 20 minutes of audio would build
     # tens of millions of Python floats (~1 GB) just to write them straight back.
     import numpy as np
     long = np.tile(mono, reps)[:need]
     out_wav = Path("/tmp/tk/long_%dm.wav" % int(minutes))
-    sf.write(str(out_wav), long, 22050)
-    dur = len(long) / 22050
+    sf.write(str(out_wav), long, TARGET_SR)
+    dur = len(long) / TARGET_SR
     print(f"built {out_wav}  {dur/60:.1f} min @22.05k mono  "
           f"({out_wav.stat().st_size/1e6:.0f} MB)")
 
