@@ -392,6 +392,49 @@ dari `MIDIMAGIC_TRANSKUN_MAX_EXTEND` (default 6s).
 Pada Rachmaninoff: **1213 dari 2483 not diperpanjang, +484s bunyi**, median not
 0.054s → 0.134s.
 
+## Audio panjang (mis. video 1,5 jam)
+
+Bisa, dan batasnya bukan durasi melainkan **waktu**. Di atas
+`MIDIMAGIC_LONG_AUDIO_SECONDS` (default 600s) pipeline berubah bentuk:
+
+- **Transkun jalan per-window** — window 240s dengan tumpang tindih 6s
+  (`MIDIMAGIC_TRANSKUN_CHUNK` / `_OVERLAP`). Ini soal memori: inference transkun
+  tumbuh seiring panjang input sementara mesin ini cuma punya ~3,6 GB bebas, jadi
+  memproses 98 menit dalam satu panggilan akan OOM. Not yang jatuh di batas window
+  terlihat utuh oleh window tetangganya, lalu duplikatnya dibuang saat merge (nada
+  sama, onset dalam 40ms).
+- **Unduhan jadi mono 22,05 kHz.** Dua jam WAV stereo 44,1k ≈ 1 GB di disk; bentuk
+  mono 22,05k ≈ 260 MB, dan jalur analisis memang resample ke bentuk itu juga.
+- **Progres per-window** muncul di log job, dan UI menampilkan perkiraan total
+  memakai `SPEED_FACTOR` hasil ukur (bukan tebakan).
+
+### Terukur: 40 menit audio, 10 window (`tests/long_audio_probe.py`)
+
+| | hasil |
+|---|---|
+| window | 10 @240s (+6s overlap), **0 gagal** |
+| wall clock | 1671s = **0.70× durasi audio** |
+| **peak RSS** | **2245 MB** — datar, tidak tumbuh seiring panjang |
+| not | 12937 (238 duplikat tumpang tindih dibuang) |
+| pedal | 663 event CC |
+| cakupan | not terakhir 2397s dari 2400s — tidak ada yang terpotong |
+
+Angka 0,70× itu **pesimistis**: run ini berjalan sambil bersaing CPU dengan build
+Next.js, dan tiap window men-spawn proses transkun baru yang memuat ulang model
+(~10–15s × 10). Estimasi wajar untuk mesin idle ≈ 0,63×.
+
+Konsekuensi praktis — perkirakan dari durasi video:
+
+| durasi audio | transkun (0,63–0,70×) | basic-pitch (~0,08×) |
+|---|---|---|
+| 10 menit | 6–7 menit | ~50 detik |
+| 40 menit | 25–28 menit | ~3 menit |
+| **98 menit** | **~1 jam** | **~8 menit** |
+
+Jadi: transkun untuk presisi, basic-pitch kalau yang penting selesai cepat —
+pemilih enginenya ada di **Pengaturan lanjutan**. Yang menentukan pilihan biasanya
+apakah materinya piano solo (transkun) atau aransemen campuran (basic-pitch).
+
 ## Uji
 
 ```bash
