@@ -190,6 +190,167 @@ def _basic_pitch_bin() -> str | None:
 
 # --------------------------------------------------------------------- prepare
 
+# ------------------------------------------------------------------ prepare
+
+# Window size for the block-wise prepare path used on long audio.
+PREP_BLOCK_SECONDS = 240.0
+_PREP_PAD_SECONDS = 2.0
+
+
+def _prepare_long(src_wav: Path, dst_wav: Path, opts: dict, log: Log) -> Path:
+    """Block-wise `prepare` for long audio — same transform, bounded memory.
+
+    The whole-signal version is not merely slow at two hours, it is memory
+    unbounded: librosa.load returns float64, `_bandlimit` hands that to scipy's
+    sosfiltfilt which allocates another full-length array, and every step in
+    between allocates a full-length temporary too. Measured on the real
+    98-minute video, that held **5.8 GB** and sat in "preparing" for over five
+    minutes with ~1 GB left on the box — one more allocation away from the OOM
+    killer taking the whole API down mid-job.
+
+    Here: one streaming pass for the peak, one cheap scan for the silence gate,
+    then fixed-size windows written straight to the output. The band-limit is
+    still filtfilt (zero phase, so the timeline never moves) but applied per
+    window with a pad copied from the neighbours, which makes each window's
+    edges behave like they would in a whole-signal filter.
+    """
+    import soundfile as sf
+    from math import gcd
+    from scipy.signal import butter, resample_poly, sosfiltfilt
+
+    info = sf.info(str(src_wav))
+    src_sr = int(info.samplerate or config.ANALYSIS_SR)
+    total = int(info.frames)
+    if total <= 0:
+        return src_wav
+
+    # The whole-signal path calls librosa.load(sr=ANALYSIS_SR), which RESAMPLES.
+    # Reading at the file's native rate without doing the same silently fed the
+    # model 44.1k audio labelled as 22.05k — the prepared file came out at double
+    # length and correlated with the correct one at ~0. Always match the rate.
+    sr = config.ANALYSIS_SR
+    need_resample = src_sr != sr
+
+    block = max(src_sr, int(PREP_BLOCK_SECONDS * src_sr))
+    pad = int(_PREP_PAD_SECONDS * src_sr)
+    nyq = src_sr / 2.0
+    lo = max(20.0, min(float(opts.get("min_frequency", 41.2)), nyq * 0.5)) / nyq
+    hi = max(lo + 0.01, min(float(opts.get("max_frequency", 4186.0)), nyq * 0.95)) / nyq
+    sos = butter(4, [lo, hi], btype="bandpass", output="sos")
+    if need_resample:
+        g = gcd(sr, src_sr)
+        rs_up, rs_down = sr // g, src_sr // g
+    use_hpss = bool(opts.get("suppress_percussion"))
+    lib = None
+    if use_hpss:
+        import librosa as lib  # noqa: PLC0415
+
+    def _mono(buf: np.ndarray) -> np.ndarray:
+        # the long-audio download is already mono; if a stereo file reaches here,
+        # mix it like librosa.load would rather than silently dropping the right
+        # channel (the timeline is unaffected either way, the content is not)
+        return buf[:, 0] if buf.shape[1] == 1 else buf.mean(axis=1)
+
+    # --- pass 1: global peak (so normalisation matches the whole-signal path)
+    # Must be over the MONO mix, because that is what gets processed: taking the
+    # peak over a stereo buffer gave 1.0 where the mono mix peaks at 0.90, so the
+    # gain came out 0.902x off and every sample was 10% quiet.
+    peak = 0.0
+    with sf.SoundFile(str(src_wav)) as f:
+        while True:
+            b = f.read(block, dtype="float32", always_2d=True)
+            if b.size == 0:
+                break
+            peak = max(peak, float(np.max(np.abs(_mono(b)))))
+    gain = (0.92 / peak) if peak > 1e-6 else 1.0
+
+    # --- the silence gate, resolved to two indices.
+    # top_db is relative to the peak, so this is the same threshold librosa's trim
+    # uses; only the two ends are touched, exactly like the whole-signal version
+    # (internal quiet passages must survive — they are part of the performance).
+    thr = peak * (10.0 ** (-45.0 / 20.0))
+    start = 0
+    end = total
+    if peak > 1e-6:
+        with sf.SoundFile(str(src_wav)) as f:
+            pos = 0
+            while pos < total:
+                b = f.read(block, dtype="float32", always_2d=True)
+                if b.size == 0:
+                    break
+                hit = np.flatnonzero(np.abs(_mono(b)) >= thr)
+                if hit.size:
+                    start = pos + int(hit[0])
+                    break
+                pos += b.shape[0]
+        with sf.SoundFile(str(src_wav)) as f:
+            pos = total
+            while pos > 0:
+                take = min(block, pos)
+                pos -= take
+                f.seek(pos)
+                b = f.read(take, dtype="float32", always_2d=True)
+                hit = np.flatnonzero(np.abs(_mono(b)) >= thr)
+                if hit.size:
+                    end = pos + int(hit[-1]) + 1
+                    break
+
+    # --- pass 2: window by window, written as we go
+    # `start`/`end` are in SOURCE samples; the output may be at a different rate, so
+    # convert them once and track the output position alongside the input position.
+    ratio = src_sr / float(sr)
+    start_out = int(start / ratio)
+    end_out = int(end / ratio)
+    written = 0
+    with sf.SoundFile(str(src_wav)) as fin:
+        with sf.SoundFile(str(dst_wav), "w", samplerate=sr, channels=1,
+                          subtype="PCM_16") as fout:
+            w0 = 0
+            while w0 < total:
+                w1 = min(total, w0 + block)
+                r0 = max(0, w0 - pad)
+                r1 = min(total, w1 + pad)
+                fin.seek(r0)
+                buf = _mono(fin.read(r1 - r0, dtype="float32", always_2d=True))
+                off = w0 - r0
+
+                seg = buf * gain
+                seg = sosfiltfilt(sos, seg).astype(np.float32)
+                if use_hpss:
+                    seg = lib.effects.hpss(seg, margin=(1.0, 5.0))[0]
+                seg = seg[off:off + (w1 - w0)]
+                if need_resample:
+                    # band-limit first, then decimate: anti-aliasing before the
+                    # rate change, which is the right order and keeps the result
+                    # equivalent to filtering at the output rate
+                    seg = resample_poly(seg, rs_up, rs_down).astype(np.float32)
+
+                g0 = max(0, start_out - written)
+                g1 = min(seg.shape[0], end_out - written)
+                if g0 > 0 or g1 < seg.shape[0]:
+                    gated = np.zeros_like(seg)
+                    if g1 > g0:
+                        gated[g0:g1] = seg[g0:g1]
+                    seg = gated
+
+                fout.write(seg)
+                written += seg.shape[0]
+                w0 = w1
+
+    expect = int(round(total * sr / src_sr))
+    if abs(written - expect) > sr // 1000 + 8:
+        log("transcribing",
+            f"peringatan: panjang hasil pra-proses {written / sr:.3f}s vs sumber "
+            f"{total / src_sr:.3f}s ({written} vs {expect} sampel)")
+    log("transcribing",
+        f"pra-proses (block-wise, {block / src_sr:.0f}s/window): normalisasi + "
+        f"band-limit {opts.get('min_frequency'):.0f}-{opts.get('max_frequency'):.0f} Hz"
+        + (" + buang perkusi" if use_hpss else "")
+        + (f" + resample {src_sr}→{sr} Hz" if need_resample else "")
+        + f" ({total / src_sr:.1f}s → {written / sr:.1f}s)")
+    return dst_wav
+
+
 def prepare(src_wav: Path, dst_wav: Path, opts: dict, log: Log) -> Path:
     """Normalise + band-limit (+ optionally de-percuss) the audio for the model."""
     try:
@@ -199,6 +360,9 @@ def prepare(src_wav: Path, dst_wav: Path, opts: dict, log: Log) -> Path:
         return src_wav
 
     try:
+        if _duration_of(src_wav) > config.LONG_AUDIO_SECONDS:
+            return _prepare_long(src_wav, dst_wav, opts, log)
+
         y, sr = librosa.load(str(src_wav), sr=config.ANALYSIS_SR, mono=True)
         if y.size == 0:
             return src_wav
